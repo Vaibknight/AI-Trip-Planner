@@ -4,12 +4,15 @@ import { useState, useEffect } from "react";
 import TripForm from "@/components/TripForm";
 import TripOutput from "@/components/TripOutput";
 import TripHistory from "@/components/TripHistory";
+import AuthContainer from "@/components/auth/AuthContainer";
 import { useTripPlan } from "@/hooks/useTripPlan";
+import { useAuth } from "@/contexts/AuthContext";
 import { saveTripToHistory } from "@/lib/storage";
 import { clearExpiredCache } from "@/lib/cache";
 import type { TripPreferences } from "@/types/trip";
 
 export default function Home() {
+  const { isAuthenticated, isLoading: authLoading, user, logout } = useAuth();
   const [tripPreferences, setTripPreferences] =
     useState<TripPreferences | null>(null);
   const [formKey, setFormKey] = useState(0); // Force form reset when loading trip
@@ -40,18 +43,85 @@ export default function Home() {
     clearExpiredCache();
   }, []);
 
+  // Show loading state while checking authentication
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-4 border-blue-600 border-t-transparent mx-auto mb-4"></div>
+          <p className="text-gray-600 dark:text-gray-400">Loading...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Show auth UI if not authenticated
+  if (!isAuthenticated) {
+    return <AuthContainer />;
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900">
       <div className="container mx-auto px-4 py-8 max-w-6xl">
-        {/* Header */}
-        <header className="text-center mb-12">
-          <h1 className="text-4xl md:text-5xl font-bold text-gray-900 dark:text-white mb-4">
-            ✈️ Trip Planner AI
-          </h1>
-          <p className="text-lg text-gray-600 dark:text-gray-400 max-w-2xl mx-auto">
-            Plan your perfect trip with AI-powered recommendations. Select your
-            preferences from the dropdowns below and get a customized itinerary.
-          </p>
+        {/* Header with Title and User Info */}
+        <header className="mb-12">
+          {/* Main Header Bar */}
+          <div className="flex items-center justify-between mb-8">
+            {/* Left Side - Title */}
+            <div className="flex items-center gap-3">
+              <h1 className="text-3xl md:text-4xl font-bold text-gray-900 dark:text-white">
+                <span className="inline-block mr-2">✈️</span>
+                <span className="bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
+                  Trip Planner AI
+                </span>
+              </h1>
+            </div>
+            
+            {/* Right Side - User Info */}
+            <div className="flex items-center gap-3 bg-white/80 dark:bg-gray-800/80 backdrop-blur-sm px-4 py-3 rounded-xl shadow-md border border-gray-200/50 dark:border-gray-700/50">
+              {/* User Avatar */}
+              <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white font-semibold text-sm shadow-md">
+                {user?.name ? (
+                  user.name.charAt(0).toUpperCase()
+                ) : (
+                  user?.email?.charAt(0).toUpperCase() || "U"
+                )}
+              </div>
+              
+              {/* User Info */}
+              <div className="hidden sm:block">
+                <p className="text-xs text-gray-500 dark:text-gray-400 font-medium">
+                  Welcome back
+                </p>
+                <p className="text-sm font-semibold text-gray-900 dark:text-white leading-tight">
+                  {user?.name || user?.email}
+                </p>
+              </div>
+              
+              {/* Logout Button */}
+              <button
+                onClick={logout}
+                className="ml-2 px-3 py-2 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 font-medium rounded-lg transition-all duration-200 flex items-center gap-2 shadow-sm hover:shadow-md"
+                title="Logout"
+              >
+                <svg
+                  className="w-4 h-4"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"
+                  />
+                </svg>
+                <span className="hidden md:inline">Logout</span>
+              </button>
+            </div>
+          </div>
+          
         </header>
 
         {/* Single Card with Scrollable Content */}

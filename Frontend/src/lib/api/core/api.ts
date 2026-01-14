@@ -43,18 +43,26 @@ function getHeaders(customHeaders?: Record<string, string>): HeadersInit {
 
   const headers = { ...defaultHeaders, ...customHeaders };
 
-  // Add auth token if available, otherwise use dummy token
-  if (typeof window !== "undefined") {
-    const token = localStorage.getItem("auth_token");
-    if (token) {
-      headers.Authorization = `Bearer ${token}`;
+  // Check if Authorization is explicitly set to empty string (for auth endpoints like login/signup)
+  const skipAuth = customHeaders?.Authorization === "";
+
+  // Add auth token if available, otherwise use dummy token (unless explicitly skipped)
+  if (!skipAuth) {
+    if (typeof window !== "undefined") {
+      const token = localStorage.getItem("auth_token");
+      if (token) {
+        headers.Authorization = `Bearer ${token}`;
+      } else {
+        // Dummy token for development
+        headers.Authorization = `Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiI2OTU5NTM4N2NkOGM5NjA1MTBmZjg1MjciLCJpYXQiOjE3Njc4OTIxNzYsImV4cCI6MTc2ODQ5Njk3Nn0.Wg-lyBqOhqith6LUvLbOOcw6fKBJ2NPLDZPsbavEHmo`;
+      }
     } else {
-      // Dummy token for development
+      // Server-side: use dummy token
       headers.Authorization = `Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiI2OTU5NTM4N2NkOGM5NjA1MTBmZjg1MjciLCJpYXQiOjE3Njc4OTIxNzYsImV4cCI6MTc2ODQ5Njk3Nn0.Wg-lyBqOhqith6LUvLbOOcw6fKBJ2NPLDZPsbavEHmo`;
     }
   } else {
-    // Server-side: use dummy token
-    headers.Authorization = `Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiI2OTU5NTM4N2NkOGM5NjA1MTBmZjg1MjciLCJpYXQiOjE3Njc4OTIxNzYsImV4cCI6MTc2ODQ5Njk3Nn0.Wg-lyBqOhqith6LUvLbOOcw6fKBJ2NPLDZPsbavEHmo`;
+    // Remove Authorization header if explicitly set to empty
+    delete headers.Authorization;
   }
 
   return headers;
@@ -274,10 +282,12 @@ export async function apiFetch<T = any>(
     }
 
     if (!response.ok) {
+      // Handle error response structure: { status: "error", message: "..." }
+      const errorMessage = data.message || data.error || `HTTP ${response.status}`;
       throw new ApiException(
         response.status,
-        data.code || "UNKNOWN_ERROR",
-        data.message || data.error || `HTTP ${response.status}`,
+        data.code || data.status || "UNKNOWN_ERROR",
+        errorMessage,
         data.details
       );
     }
