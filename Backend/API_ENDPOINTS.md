@@ -21,11 +21,7 @@ Register a new user account.
 {
   "name": "John Doe",
   "email": "john@example.com",
-  "password": "password123",
-  "preferences": {
-    "budget": "moderate",
-    "travelStyle": "cultural"
-  }
+  "password": "password123"
 }
 ```
 

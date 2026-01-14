@@ -7,13 +7,12 @@ const logger = require('../utils/logger');
  */
 const register = async (req, res, next) => {
   try {
-    const { name, email, password, preferences } = req.body;
+    const { name, email, password } = req.body;
 
     const user = await userService.createUser({
       name,
       email,
-      password,
-      preferences
+      password
     });
 
     const token = generateToken(user._id);
