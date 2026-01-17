@@ -163,10 +163,22 @@ const tripSchema = new mongoose.Schema({
       enum: ['flight', 'train', 'bus', 'car', 'other']
     },
     options: [String],
-    estimatedCost: { type: Number, default: 0 }
+    estimatedCost: { type: Number, default: 0 },
+    localTransportation: {
+      metro: String,
+      autoRickshaw: String,
+      eRickshaw: String,
+      buses: String,
+      other: String,
+      tips: [String]
+    }
   },
   itinerary: [dayItinerarySchema],
   itineraryHtml: {
+    type: String,
+    default: null
+  },
+  budgetHtml: {
     type: String,
     default: null
   },
@@ -218,6 +230,7 @@ const tripSchema = new mongoose.Schema({
     costDifference: { type: Number, default: 0 }
   }],
   recommendations: [String],
+  recommendedAreas: [String], // Recommended areas/neighborhoods for 2-3 day trips
   tags: [String],
   createdAt: {
     type: Date,

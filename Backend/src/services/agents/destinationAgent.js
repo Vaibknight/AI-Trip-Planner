@@ -21,18 +21,46 @@ class DestinationAgent {
    */
   async findDestinations(tripData, intent) {
     try {
-      const city = tripData.city || tripData.to || tripData.destination || '';
-      const destination = tripData.to || tripData.destination || '';
+      // CRITICAL: ONLY use state field - no fallbacks to city/to/destination
+      const state = tripData.state || '';
       const origin = tripData.origin || tripData.from || 'Origin';
       
+      logger.info('Destination Agent - findDestinations called', {
+        state: tripData.state || 'UNDEFINED',
+        city: tripData.city || 'UNDEFINED (IGNORED)',
+        to: tripData.to || 'UNDEFINED (IGNORED)',
+        destination: tripData.destination || 'UNDEFINED (IGNORED)',
+        usingState: state || 'EMPTY - WILL SEARCH GENERIC',
+        allTripDataKeys: Object.keys(tripData),
+        tripDataRaw: JSON.stringify({
+          state: tripData.state,
+          city: tripData.city,
+          to: tripData.to,
+          destination: tripData.destination
+        })
+      });
+      
+      // Enhanced prompt for 2-3 day trips to emphasize areas
+      const isShortTrip = intent.estimatedDays >= 2 && intent.estimatedDays <= 3;
+      const areasInstruction = isShortTrip 
+        ? `\nIMPORTANT: Since this is a ${intent.estimatedDays}-day trip, focus on recommending the BEST 3-5 areas/neighborhoods that travelers should explore. These areas should be walkable or easily accessible and contain multiple attractions/activities nearby.`
+        : '';
+      
       // Single HTML prompt for all destination information
-      const prompt = `Research ${city || destination} for a ${intent.estimatedDays}-day trip.
+      // CRITICAL: ONLY use state - no fallbacks
+      if (!state) {
+        logger.warn('Destination Agent: No state provided - will search generically');
+      }
+      
+      const prompt = `Research ${state || 'a suitable destination'} for a ${intent.estimatedDays}-day trip.
 
 Origin: ${origin}
-Destination: ${city || destination}
+Destination: ${state || 'a suitable destination'}${state ? ' (USE THIS EXACT DESTINATION - DO NOT CHANGE IT)' : ' (suggest a suitable destination)'}
 Interests: ${intent.priorityInterests.join(', ')}
 Season: ${tripData.season || 'any'}
-Budget: ${intent.budgetCategory}
+Budget: ${intent.budgetCategory}${areasInstruction}
+
+CRITICAL: If a specific destination state is provided (${state}), you MUST research that exact destination. Do NOT suggest a different destination. Use "${state}" exactly as provided.
 
 Generate HTML content with destination information:
 
@@ -45,17 +73,27 @@ Generate HTML content with destination information:
 
 <h3>Key Areas</h3>
 <ul>
-<li>[Area/Neighborhood 1]</li>
-<li>[Area/Neighborhood 2]</li>
-<li>[Area/Neighborhood 3]</li>
-<li>[Area/Neighborhood 4]</li>
-<li>[Area/Neighborhood 5]</li>
+<li>[Area/Neighborhood 1]${isShortTrip ? ' - Brief description of why this area is recommended' : ''}</li>
+<li>[Area/Neighborhood 2]${isShortTrip ? ' - Brief description of why this area is recommended' : ''}</li>
+<li>[Area/Neighborhood 3]${isShortTrip ? ' - Brief description of why this area is recommended' : ''}</li>
+${isShortTrip ? '<li>[Area/Neighborhood 4] - Brief description of why this area is recommended</li>\n<li>[Area/Neighborhood 5] - Brief description of why this area is recommended</li>' : '<li>[Area/Neighborhood 4]</li>\n<li>[Area/Neighborhood 5]</li>'}
 </ul>
 
 <h2>Transportation</h2>
 <p><strong>Recommended:</strong> [flight|train|bus|car]</p>
 <p><strong>Options:</strong> [option1, option2]</p>
 <p><strong>Estimated Cost:</strong> [amount]</p>
+
+<h3>Local Transportation Tips</h3>
+<p>Information about getting around within ${state || 'the destination'}:</p>
+<ul>
+<li><strong>Metro/Subway:</strong> [Availability, key stations, operating hours, approximate cost]</li>
+<li><strong>Auto-Rickshaws:</strong> [Availability, typical fare range, tips for using]</li>
+<li><strong>E-Rickshaws:</strong> [Availability, typical fare range, where to find them]</li>
+<li><strong>Buses:</strong> [Availability, key routes, fare information]</li>
+<li><strong>Other:</strong> [Taxis, app-based rides (Uber/Ola), bike rentals, walking tips]</li>
+</ul>
+<p><strong>Transportation Tips:</strong> [2-3 practical tips for getting around efficiently, best modes for different areas, cost-saving tips]</p>
 
 <h2>Top Attractions</h2>
 <ul>
@@ -101,7 +139,7 @@ Requirements:
       }
       
       // Parse HTML to extract structured data for internal compatibility
-      const structuredData = this.parseHtmlToStructured(destinationHtml, city || destination, intent, tripData);
+      const structuredData = this.parseHtmlToStructured(destinationHtml, state || '', intent, tripData);
       
       logger.info('Destination Agent: HTML response received and parsed', {
         htmlLength: destinationHtml.length,
@@ -115,13 +153,13 @@ Requirements:
       };
     } catch (error) {
       logger.error('Destination Agent Error:', error);
-      // Return basic destination structure on error
-      const destination = tripData.to || tripData.destination || '';
+      // Return basic destination structure on error - use state only
+      const fallbackDestination = tripData.state || 'Destination';
       return {
-        html: `<h2>Destination Overview</h2><p><strong>Name:</strong> ${destination}</p>`,
+        html: `<h2>Destination Overview</h2><p><strong>Name:</strong> ${fallbackDestination}</p>`,
         mainDestination: {
-          name: destination,
-          city: destination,
+          name: fallbackDestination,
+          city: fallbackDestination,
           country: '',
           description: '',
           bestTimeToVisit: tripData.season || 'All year',
@@ -131,7 +169,15 @@ Requirements:
         transportation: {
           recommended: 'flight',
           options: ['flight', 'train'],
-          estimatedCost: 0
+          estimatedCost: 0,
+          localTransportation: {
+            metro: null,
+            autoRickshaw: null,
+            eRickshaw: null,
+            buses: null,
+            other: null,
+            tips: []
+          }
         },
         attractions: []
       };
@@ -169,7 +215,15 @@ Requirements:
       transportation: {
         recommended: 'flight',
         options: ['flight', 'train'],
-        estimatedCost: 0
+        estimatedCost: 0,
+        localTransportation: {
+          metro: null,
+          autoRickshaw: null,
+          eRickshaw: null,
+          buses: null,
+          other: null,
+          tips: []
+        }
       },
       attractions: []
     };
@@ -200,15 +254,18 @@ Requirements:
         result.mainDestination.bestTimeToVisit = timeMatch[1].trim();
       }
 
-      // Extract key areas
+      // Extract key areas (with optional descriptions)
       const areasMatch = html.match(/<h3>Key Areas<\/h3>[\s\S]*?<ul>([\s\S]*?)<\/ul>/i);
       if (areasMatch) {
         const areasList = areasMatch[1];
-        const areaItems = areasList.match(/<li>([^<]+)<\/li>/g);
+        const areaItems = areasList.match(/<li>([\s\S]*?)<\/li>/g);
         if (areaItems) {
-          result.mainDestination.keyAreas = areaItems.map(item => 
-            item.replace(/<\/?li>/g, '').trim()
-          );
+          result.mainDestination.keyAreas = areaItems.map(item => {
+            const cleanItem = item.replace(/<\/?li>/g, '').trim();
+            // Extract area name (before dash if description exists)
+            const areaName = cleanItem.split(' - ')[0].trim();
+            return areaName;
+          });
         }
       }
 
@@ -227,6 +284,66 @@ Requirements:
       if (costMatch) {
         const costStr = costMatch[1].trim().replace(/[^\d]/g, '');
         result.transportation.estimatedCost = parseInt(costStr) || 0;
+      }
+
+      // Extract local transportation tips
+      result.transportation.localTransportation = {
+        metro: null,
+        autoRickshaw: null,
+        eRickshaw: null,
+        buses: null,
+        other: null,
+        tips: []
+      };
+
+      // Extract local transportation section
+      const localTransportMatch = html.match(/<h3>Local Transportation Tips<\/h3>[\s\S]*?<ul>([\s\S]*?)<\/ul>/i);
+      if (localTransportMatch) {
+        const transportList = localTransportMatch[1];
+        const transportItems = transportList.match(/<li>([\s\S]*?)<\/li>/g);
+        if (transportItems) {
+          transportItems.forEach(item => {
+            const cleanItem = item.replace(/<\/?li>/g, '').trim();
+            // Extract transportation type and info
+            if (cleanItem.includes('<strong>Metro/Subway:</strong>')) {
+              result.transportation.localTransportation.metro = cleanItem
+                .replace(/<strong>Metro\/Subway:<\/strong>\s*/i, '')
+                .replace(/<[^>]+>/g, '')
+                .trim();
+            } else if (cleanItem.includes('<strong>Auto-Rickshaws:</strong>')) {
+              result.transportation.localTransportation.autoRickshaw = cleanItem
+                .replace(/<strong>Auto-Rickshaws:<\/strong>\s*/i, '')
+                .replace(/<[^>]+>/g, '')
+                .trim();
+            } else if (cleanItem.includes('<strong>E-Rickshaws:</strong>')) {
+              result.transportation.localTransportation.eRickshaw = cleanItem
+                .replace(/<strong>E-Rickshaws:<\/strong>\s*/i, '')
+                .replace(/<[^>]+>/g, '')
+                .trim();
+            } else if (cleanItem.includes('<strong>Buses:</strong>')) {
+              result.transportation.localTransportation.buses = cleanItem
+                .replace(/<strong>Buses:<\/strong>\s*/i, '')
+                .replace(/<[^>]+>/g, '')
+                .trim();
+            } else if (cleanItem.includes('<strong>Other:</strong>')) {
+              result.transportation.localTransportation.other = cleanItem
+                .replace(/<strong>Other:<\/strong>\s*/i, '')
+                .replace(/<[^>]+>/g, '')
+                .trim();
+            }
+          });
+        }
+      }
+
+      // Extract transportation tips
+      const tipsMatch = html.match(/<strong>Transportation Tips:<\/strong>\s*([^<]+)/i);
+      if (tipsMatch) {
+        const tipsText = tipsMatch[1].trim();
+        // Split tips by common separators (periods, semicolons, or newlines)
+        result.transportation.localTransportation.tips = tipsText
+          .split(/[.;]\s+/)
+          .map(tip => tip.trim())
+          .filter(tip => tip.length > 0);
       }
 
       // Extract attractions

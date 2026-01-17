@@ -17,7 +17,9 @@ class ItineraryAgent {
   async createItinerary(tripData, intent, destinations, onToken = null) {
     try {
       // Build comprehensive prompt with all parameters
-      const city = tripData.city || destinations.mainDestination.city || destinations.mainDestination.name;
+      // CRITICAL: ONLY use tripData.state - no fallbacks to city/to/destination
+      // Only fall back to destinations.mainDestination if state is not provided
+      const city = tripData.state || destinations.mainDestination.city || destinations.mainDestination.name || '';
       const country = destinations.mainDestination.country || '';
       const season = tripData.season || 'winter';
       const travelType = tripData.travelType || 'leisure';
@@ -29,7 +31,20 @@ class ItineraryAgent {
       const destination = city;
       const budgetLabel = budgetRange === 'luxury' ? 'Luxury' : budgetRange === 'budget' ? 'Budget' : 'Moderate';
       
+      logger.info('Itinerary Agent - State/Destination', {
+        tripDataState: tripData.state || 'UNDEFINED - ONLY THIS WILL BE USED',
+        tripDataCity: tripData.city || 'UNDEFINED (IGNORED)',
+        tripDataTo: tripData.to || 'UNDEFINED (IGNORED)',
+        tripDataDestination: tripData.destination || 'UNDEFINED (IGNORED)',
+        destinationsCity: destinations.mainDestination.city,
+        destinationsName: destinations.mainDestination.name,
+        finalCity: city,
+        note: 'Only state field is used - no fallbacks to city/to/destination'
+      });
+      
       const prompt = `Create a ${intent.estimatedDays}-day ${budgetLabel} ${season} tour of ${destination}.
+
+CRITICAL: The destination is ${destination}. You MUST create an itinerary for ${destination} specifically. Do NOT use a different city or destination. Use "${destination}" exactly as provided.
 
 Origin: ${origin}
 Destination: ${destination}

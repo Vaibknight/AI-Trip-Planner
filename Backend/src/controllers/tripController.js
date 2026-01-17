@@ -3,6 +3,57 @@ const orchestratorService = require('../services/orchestratorService');
 const logger = require('../utils/logger');
 
 /**
+ * Calculate trip start and end dates based on arrival time
+ * Logic:
+ * - If arrival is at night (after 8 PM / 20:00), trip starts next day
+ * - If arrival is in afternoon (before 6 PM / 18:00), trip starts same day from evening (6 PM)
+ * - If arrival is between 6 PM and 8 PM, trip starts next day
+ * @param {string|Date} startDateTime - Arrival date and time (ISO 8601 string or Date object)
+ * @param {number} duration - Trip duration in days
+ * @returns {Object} - { startDate: Date, endDate: Date }
+ */
+const calculateTripDatesFromArrival = (startDateTime, duration) => {
+  if (!startDateTime) {
+    return { startDate: null, endDate: null };
+  }
+
+  const arrivalDate = new Date(startDateTime);
+  const arrivalHour = arrivalDate.getHours();
+  const arrivalMinute = arrivalDate.getMinutes();
+  const arrivalTime = arrivalHour * 60 + arrivalMinute; // Convert to minutes for easier comparison
+  
+  const nightThreshold = 20 * 60; // 8 PM in minutes
+  const afternoonThreshold = 18 * 60; // 6 PM in minutes
+  
+  let tripStartDate = new Date(arrivalDate);
+  
+  // If arrival is at night (after 8 PM), trip starts next day
+  if (arrivalTime >= nightThreshold) {
+    tripStartDate.setDate(tripStartDate.getDate() + 1);
+    tripStartDate.setHours(9, 0, 0, 0); // Start at 9 AM next day
+  } 
+  // If arrival is in afternoon (before 6 PM), trip starts same day from evening
+  else if (arrivalTime < afternoonThreshold) {
+    tripStartDate.setHours(18, 0, 0, 0); // Start at 6 PM same day
+  }
+  // If arrival is between 6 PM and 8 PM, trip starts next day
+  else {
+    tripStartDate.setDate(tripStartDate.getDate() + 1);
+    tripStartDate.setHours(9, 0, 0, 0); // Start at 9 AM next day
+  }
+  
+  // Calculate end date based on duration
+  const tripEndDate = new Date(tripStartDate);
+  tripEndDate.setDate(tripEndDate.getDate() + parseInt(duration));
+  tripEndDate.setHours(18, 0, 0, 0); // End at 6 PM on last day
+  
+  return {
+    startDate: tripStartDate,
+    endDate: tripEndDate
+  };
+};
+
+/**
  * Plan trip using orchestrator (main endpoint following the flow)
  * POST /api/trips/plan-trip
  * Simple flow: destination + days
@@ -80,14 +131,27 @@ const planTrip = async (req, res, next) => {
  * - 'error': Error occurred
  */
 const planTripWithPreferences = async (req, res, next) => {
+  // Log incoming request body for debugging
+  logger.info('📥 planTripWithPreferences - Request received', {
+    body: req.body,
+    hasBudgetRangeString: !!req.body.budgetRangeString,
+    hasBudgetRange: !!req.body.budgetRange,
+    hasAmount: !!req.body.amount,
+    budgetRangeString: req.body.budgetRangeString,
+    budgetRange: req.body.budgetRange,
+    amount: req.body.amount
+  });
+  
   // Check if client wants SSE (via Accept header or query param)
   const useSSE = req.headers.accept?.includes('text/event-stream') || req.query.stream === 'true';
   
   if (useSSE) {
+    logger.info('Using SSE version');
     return planTripWithPreferencesSSE(req, res, next);
   }
   
   // Original non-streaming version
+  logger.info('Using sync version');
   return planTripWithPreferencesSync(req, res, next);
 };
 
@@ -110,22 +174,65 @@ const planTripWithPreferencesSSE = async (req, res, next) => {
   };
 
   try {
+    // Log incoming request body for debugging
+    logger.info('📥 SSE version - Raw req.body', {
+      state: req.body.state,
+      destination: req.body.destination,
+      origin: req.body.origin,
+      allKeys: Object.keys(req.body)
+    });
+    
     const {
       destination,
+      state, // State/city destination
+      origin,
       travelType = 'leisure',
       interests = [],
       season,
       duration,
-      amount,
+      amount, // Legacy field
+      budgetRange,
+      budgetRangeString,
       travelers = 1,
-      currency = 'USD'
+      currency = 'USD',
+      startDateTime, // New: arrival date and time
+      endDateTime,   // New: departure date and time
+      startDate,
+      endDate
     } = req.body;
+    
+    // Log destination payload
+    logger.info('📍 SSE Destination payload received', {
+      state: state || 'undefined',
+      origin: origin || 'undefined',
+      destination: destination || 'undefined',
+      stateType: typeof state
+    });
 
-    // Calculate dates based on season if provided
+    // Calculate dates based on arrival time if startDateTime is provided
     let calculatedStartDate = null;
     let calculatedEndDate = null;
 
-    if (season) {
+    if (startDateTime) {
+      // Use arrival time logic to calculate trip dates
+      const tripDates = calculateTripDatesFromArrival(startDateTime, duration);
+      calculatedStartDate = tripDates.startDate;
+      calculatedEndDate = tripDates.endDate;
+      
+      // If endDateTime is provided, use it instead of calculated end date
+      if (endDateTime) {
+        calculatedEndDate = new Date(endDateTime);
+      }
+    } else if (startDate) {
+      // Use provided startDate (backward compatibility)
+      calculatedStartDate = new Date(startDate);
+      if (endDate) {
+        calculatedEndDate = new Date(endDate);
+      } else if (duration) {
+        calculatedEndDate = new Date(calculatedStartDate);
+        calculatedEndDate.setDate(calculatedEndDate.getDate() + parseInt(duration));
+      }
+    } else if (season) {
       const currentYear = new Date().getFullYear();
       const seasonMonths = {
         spring: { month: 2, day: 21 },
@@ -141,8 +248,76 @@ const planTripWithPreferencesSSE = async (req, res, next) => {
       }
     }
 
-    // Use provided amount or default to 50000
-    const budgetAmount = amount ? parseFloat(amount) : 50000;
+    // Use the same budget parsing logic as sync version
+    // Priority: budgetRangeString (if numeric) > budgetRangeString (if range) > amount (legacy) > budgetRange (if numeric) > budgetRange (if enum)
+    let budgetAmount = null;
+    
+    logger.info('SSE Budget parsing started', { 
+      budgetRange: budgetRange || 'undefined', 
+      budgetRangeString: budgetRangeString || 'undefined',
+      amount: amount || 'undefined'
+    });
+    
+    // First priority: Check budgetRangeString
+    if (budgetRangeString !== undefined && budgetRangeString !== null && String(budgetRangeString).trim() !== '') {
+      const trimmedString = String(budgetRangeString).trim();
+      const cleanedString = trimmedString.replace(/[₹$,\s]/g, '');
+      const singleNumber = parseFloat(cleanedString);
+      if (!isNaN(singleNumber) && singleNumber > 0) {
+        budgetAmount = singleNumber;
+        logger.info('✅ SSE Budget Range String parsed as single number', { budgetRangeString, budgetAmount });
+      } else {
+        const match = trimmedString.match(/(\d+)[-–](\d+)/);
+        if (match) {
+          budgetAmount = (parseInt(match[1]) + parseInt(match[2])) / 2;
+          logger.info('✅ SSE Budget Range String parsed as range', { budgetRangeString, budgetAmount });
+        }
+      }
+    }
+    
+    // Second priority: Check amount (legacy field)
+    if (budgetAmount === null && amount !== undefined && amount !== null) {
+      const parsedAmount = parseFloat(amount);
+      if (!isNaN(parsedAmount) && parsedAmount > 0) {
+        budgetAmount = parsedAmount;
+        logger.info('✅ SSE Amount (legacy) parsed', { amount, budgetAmount });
+      }
+    }
+    
+    // Third priority: Check budgetRange
+    if (budgetAmount === null && budgetRange !== undefined && budgetRange !== null) {
+      const trimmedRange = String(budgetRange).trim();
+      const cleanedRange = trimmedRange.replace(/[₹$,\s]/g, '');
+      const parsedBudget = parseFloat(cleanedRange);
+      if (!isNaN(parsedBudget) && parsedBudget > 0) {
+        budgetAmount = parsedBudget;
+        logger.info('✅ SSE Budget Range parsed as number', { budgetRange, budgetAmount });
+      } else {
+        const budgetMap = {
+          budget: 20000,
+          moderate: 50000,
+          luxury: 100000
+        };
+        budgetAmount = budgetMap[trimmedRange.toLowerCase()] || null;
+        if (budgetAmount) {
+          logger.info('✅ SSE Budget Range mapped from enum', { budgetRange, budgetAmount });
+        }
+      }
+    }
+    
+    // Default fallback
+    if (budgetAmount === null || budgetAmount <= 0) {
+      budgetAmount = 30000;
+      logger.warn('⚠️ SSE Using default budget amount', { budgetAmount });
+    }
+    
+    logger.info('🎯 SSE Final budget amount calculated', { 
+      budgetRange, 
+      budgetRangeString, 
+      amount,
+      budgetAmount, 
+      currency 
+    });
 
     // Map travel type to travel style
     const travelStyleMap = {
@@ -153,13 +328,27 @@ const planTripWithPreferencesSSE = async (req, res, next) => {
     };
     const travelStyle = travelStyleMap[travelType] || 'cultural';
 
-    const tripData = {
-      from: null, // Origin not required for preferences-based planning
-      to: destination,
-      origin: null, // Origin not required for preferences-based planning
+    // Determine destination: use state field
+    const finalDestination = state || destination || null;
+    
+    // Log final destination determination
+    logger.info('🎯 SSE Final destination determined', {
+      state: state,
       destination: destination,
+      finalDestination: finalDestination
+    });
+
+    const tripData = {
+      from: origin || 'Your Location',
+      to: finalDestination,
+      origin: origin || 'Your Location',
+      destination: finalDestination,
+      state: state, // Pass state separately for reference
+      city: state, // Also set city for backward compatibility with agents
       startDate: calculatedStartDate,
       endDate: calculatedEndDate,
+      startDateTime: startDateTime ? new Date(startDateTime) : null, // Arrival date and time
+      endDateTime: endDateTime ? new Date(endDateTime) : null, // Departure date and time
       budget: budgetAmount,
       currency: currency || 'USD',
       travelers: parseInt(travelers) || 1,
@@ -168,9 +357,22 @@ const planTripWithPreferencesSSE = async (req, res, next) => {
       travelStyle,
       season,
       duration: parseInt(duration),
-      budgetRange: amount ? (amount < 30000 ? 'budget' : amount < 80000 ? 'moderate' : 'luxury') : 'moderate',
+      budgetRange: budgetRange || (budgetAmount < 20000 ? 'budget' : budgetAmount < 50000 ? 'moderate' : budgetAmount < 100000 ? 'moderate' : 'luxury'),
+      budgetRangeString,
       preferencesBased: true
     };
+    
+    // Log trip data being sent to orchestrator
+    logger.info('🚀 SSE Trip data prepared for orchestrator', {
+      destination: tripData.destination,
+      state: tripData.state,
+      city: tripData.city,
+      to: tripData.to,
+      origin: tripData.origin,
+      budget: tripData.budget,
+      currency: tripData.currency,
+      duration: tripData.duration
+    });
 
     // Enhanced progress callback that sends SSE events
     const progressCallback = (progress) => {
@@ -236,27 +438,75 @@ const planTripWithPreferencesSSE = async (req, res, next) => {
  */
 const planTripWithPreferencesSync = async (req, res, next) => {
   try {
+    // Log raw request body before destructuring
+    logger.info('📥 Sync version - Raw req.body', {
+      budgetRangeString: req.body.budgetRangeString,
+      budgetRange: req.body.budgetRange,
+      amount: req.body.amount,
+      allKeys: Object.keys(req.body)
+    });
+    
     const {
       travelType = 'leisure',
       interests = [],
       season,
       duration,
-      budgetRange = 'moderate',
+      budgetRange,
       budgetRangeString,
       origin,
-      destinationPreference,
-      city, // City selected after country selection
+      state, // State/city destination
       startDate,
       endDate,
+      startDateTime, // New: arrival date and time
+      endDateTime,   // New: departure date and time
       travelers = 1,
       currency = 'INR'
     } = req.body;
+    
+    // Log destination payload
+    logger.info('📍 Destination payload received', {
+      state: state || 'undefined',
+      origin: origin || 'undefined',
+      stateType: typeof state,
+      allDestinationFields: {
+        state: req.body.state,
+        destination: req.body.destination
+      }
+    });
+    
+    // Log after destructuring
+    logger.info('📥 Sync version - After destructuring', {
+      budgetRangeString: budgetRangeString,
+      budgetRange: budgetRange,
+      state: state,
+      budgetRangeStringType: typeof budgetRangeString,
+      budgetRangeType: typeof budgetRange
+    });
 
-    // Calculate dates based on season and duration if not provided
-    let calculatedStartDate = startDate;
-    let calculatedEndDate = endDate;
+    // Calculate dates based on arrival time if startDateTime is provided
+    let calculatedStartDate = null;
+    let calculatedEndDate = null;
 
-    if (!calculatedStartDate && season) {
+    if (startDateTime) {
+      // Use arrival time logic to calculate trip dates
+      const tripDates = calculateTripDatesFromArrival(startDateTime, duration);
+      calculatedStartDate = tripDates.startDate;
+      calculatedEndDate = tripDates.endDate;
+      
+      // If endDateTime is provided, use it instead of calculated end date
+      if (endDateTime) {
+        calculatedEndDate = new Date(endDateTime);
+      }
+    } else if (startDate) {
+      // Use provided startDate (backward compatibility)
+      calculatedStartDate = new Date(startDate);
+      if (endDate) {
+        calculatedEndDate = new Date(endDate);
+      } else if (duration) {
+        calculatedEndDate = new Date(calculatedStartDate);
+        calculatedEndDate.setDate(calculatedEndDate.getDate() + parseInt(duration));
+      }
+    } else if (season) {
       // Calculate start date based on season
       const currentYear = new Date().getFullYear();
       const seasonMonths = {
@@ -272,36 +522,109 @@ const planTripWithPreferencesSync = async (req, res, next) => {
       } else {
         calculatedStartDate = new Date(); // Default to today
       }
-    } else if (!calculatedStartDate) {
-      calculatedStartDate = new Date(); // Default to today
+      
+      if (duration) {
+        calculatedEndDate = new Date(calculatedStartDate);
+        calculatedEndDate.setDate(calculatedEndDate.getDate() + parseInt(duration));
+      }
     } else {
-      calculatedStartDate = new Date(calculatedStartDate);
-    }
-
-    if (!calculatedEndDate && duration) {
-      calculatedEndDate = new Date(calculatedStartDate);
-      calculatedEndDate.setDate(calculatedEndDate.getDate() + parseInt(duration));
-    } else if (calculatedEndDate) {
-      calculatedEndDate = new Date(calculatedEndDate);
+      // Default to today
+      calculatedStartDate = new Date();
+      if (duration) {
+        calculatedEndDate = new Date(calculatedStartDate);
+        calculatedEndDate.setDate(calculatedEndDate.getDate() + parseInt(duration));
+      }
     }
 
     // Convert budget range to numeric value
-    let budgetAmount = 30000; // Default
-    if (budgetRangeString) {
-      // Parse budget range string like "$500-$1000" or "₹5000-₹10000"
-      const match = budgetRangeString.match(/(\d+)[-–](\d+)/);
-      if (match) {
-        budgetAmount = (parseInt(match[1]) + parseInt(match[2])) / 2; // Average
+    // Priority: budgetRangeString (if numeric) > budgetRangeString (if range) > budgetRange (if numeric) > budgetRange (if enum)
+    let budgetAmount = null; // Use null to track if we've found a valid budget
+    
+    logger.info('Budget parsing started', { 
+      budgetRange: budgetRange || 'undefined', 
+      budgetRangeString: budgetRangeString || 'undefined',
+      budgetRangeType: typeof budgetRange,
+      budgetRangeStringType: typeof budgetRangeString
+    });
+    
+    // First priority: Check budgetRangeString
+    if (budgetRangeString !== undefined && budgetRangeString !== null && String(budgetRangeString).trim() !== '') {
+      const trimmedString = String(budgetRangeString).trim();
+      // First try to parse as a single number (e.g., "10000", "₹10000", "$10000")
+      const cleanedString = trimmedString.replace(/[₹$,\s]/g, '');
+      const singleNumber = parseFloat(cleanedString);
+      logger.info('Attempting to parse budgetRangeString', { 
+        original: budgetRangeString, 
+        trimmed: trimmedString, 
+        cleaned: cleanedString, 
+        parsed: singleNumber,
+        isValid: !isNaN(singleNumber) && singleNumber > 0
+      });
+      
+      if (!isNaN(singleNumber) && singleNumber > 0) {
+        budgetAmount = singleNumber;
+        logger.info('✅ Budget Range String parsed as single number', { budgetRangeString, budgetAmount });
+      } else {
+        // Try to parse as range string like "$500-$1000" or "₹5000-₹10000"
+        const match = trimmedString.match(/(\d+)[-–](\d+)/);
+        if (match) {
+          budgetAmount = (parseInt(match[1]) + parseInt(match[2])) / 2; // Average
+          logger.info('✅ Budget Range String parsed as range', { budgetRangeString, budgetAmount });
+        } else {
+          logger.warn('❌ Budget Range String could not be parsed', { budgetRangeString });
+        }
       }
     } else {
-      // Map budget range to approximate values
-      const budgetMap = {
-        budget: 20000,
-        moderate: 50000,
-        luxury: 100000
-      };
-      budgetAmount = budgetMap[budgetRange] || 30000;
+      logger.info('Budget Range String is empty or undefined', { budgetRangeString });
     }
+    
+    // Second priority: Check budgetRange if budgetRangeString didn't yield a valid amount
+    if (budgetAmount === null && budgetRange !== undefined && budgetRange !== null) {
+      const trimmedRange = String(budgetRange).trim();
+      // Try to parse budgetRange as a number (for free-form input like "10000")
+      const cleanedRange = trimmedRange.replace(/[₹$,\s]/g, '');
+      const parsedBudget = parseFloat(cleanedRange);
+      logger.info('Attempting to parse budgetRange', { 
+        original: budgetRange, 
+        trimmed: trimmedRange, 
+        cleaned: cleanedRange, 
+        parsed: parsedBudget,
+        isValid: !isNaN(parsedBudget) && parsedBudget > 0
+      });
+      
+      if (!isNaN(parsedBudget) && parsedBudget > 0) {
+        budgetAmount = parsedBudget;
+        logger.info('✅ Budget Range parsed as number', { budgetRange, budgetAmount });
+      } else {
+        // Fallback to enum mapping for backward compatibility
+        const budgetMap = {
+          budget: 20000,
+          moderate: 50000,
+          luxury: 100000
+        };
+        budgetAmount = budgetMap[trimmedRange.toLowerCase()] || null;
+        if (budgetAmount) {
+          logger.info('✅ Budget Range mapped from enum', { budgetRange, budgetAmount });
+        } else {
+          logger.warn('❌ Budget Range could not be parsed or mapped', { budgetRange });
+        }
+      }
+    } else if (budgetAmount === null) {
+      logger.info('Budget Range is empty or undefined', { budgetRange });
+    }
+    
+    // Default fallback
+    if (budgetAmount === null || budgetAmount <= 0) {
+      budgetAmount = 30000;
+      logger.warn('⚠️ Using default budget amount', { budgetAmount });
+    }
+    
+    logger.info('🎯 Final budget amount calculated', { 
+      budgetRange: budgetRange || 'undefined', 
+      budgetRangeString: budgetRangeString || 'undefined', 
+      budgetAmount, 
+      currency 
+    });
 
     // Map travel type to travel style
     const travelStyleMap = {
@@ -312,19 +635,27 @@ const planTripWithPreferencesSync = async (req, res, next) => {
     };
     const travelStyle = travelStyleMap[travelType] || 'cultural';
 
-    // Determine destination: city takes priority, then destinationPreference
-    const finalDestination = city || destinationPreference || null;
+    // Determine destination: use state field
+    const finalDestination = state || null;
+    
+    // Log final destination determination
+    logger.info('🎯 Final destination determined', {
+      state: state,
+      finalDestination: finalDestination
+    });
 
     // Prepare trip data for orchestrator
     const tripData = {
       from: origin || 'Your Location',
-      to: finalDestination, // Use city if provided, otherwise destinationPreference
+      to: finalDestination,
       origin: origin || 'Your Location',
       destination: finalDestination,
-      city: city, // Pass city separately for reference
-      destinationPreference: destinationPreference, // Keep original preference for context
+      state: state, // Pass state separately for reference
+      city: state, // Also set city for backward compatibility with agents
       startDate: calculatedStartDate,
       endDate: calculatedEndDate,
+      startDateTime: startDateTime ? new Date(startDateTime) : null, // Arrival date and time
+      endDateTime: endDateTime ? new Date(endDateTime) : null, // Departure date and time
       budget: budgetAmount,
       currency,
       travelers: parseInt(travelers) || 1,

@@ -179,12 +179,13 @@ Authorization: Bearer <token>
   "season": "winter",
   "duration": 7,
   "budgetRange": "luxury",
-  "budgetRangeString": "$500-$1000",
+  "budgetRangeString": "10000",
   "origin": "New York",
-  "destinationPreference": "Europe",
-  "city": "New Delhi",
+  "state": "Kolkata",
   "travelers": 2,
-  "currency": "USD"
+  "currency": "INR",
+  "startDateTime": "2024-12-15T14:30:00Z",
+  "endDateTime": "2024-12-22T18:00:00Z"
 }
 ```
 
@@ -193,15 +194,19 @@ Authorization: Bearer <token>
 - `interests` (optional): Array of interests: `history`, `nightlife`, `food`, `nature`, `art`, `shopping`, `adventure`, `culture`, `beach`, `mountains`
 - `season` (optional): `spring`, `summer`, `fall`, `winter` (auto-calculates dates)
 - `duration` (required): Number of days (1-30)
-- `budgetRange` (optional): `budget`, `moderate`, `luxury` (default: `moderate`)
-- `budgetRangeString` (optional): Budget range like `"$500-$1000"` or `"₹5000-₹10000"`
+- `budgetRange` (optional): Any string value (e.g., `"10000"`, `"budget"`, `"moderate"`, `"luxury"`). If numeric, will be used as budget amount. If text, will be mapped to approximate values (default: `moderate`)
+- `budgetRangeString` (optional): Budget range like `"$500-$1000"` or `"₹5000-₹10000"` or a single number like `"10000"`
 - `origin` (optional): Starting location
-- `destinationPreference` (optional): Preferred destination or region (e.g., "Europe", "India") - used when selecting country first
-- `city` (optional): Specific city selected after country selection (e.g., "New Delhi", "Paris") - takes priority over destinationPreference
+- `state` (optional): Destination state/city (e.g., "Kolkata", "Paris", "New York"). At least one of `destination` or `state` must be provided
 - `travelers` (optional): Number of travelers (default: 1)
 - `currency` (optional): Currency code (default: `INR`)
-- `startDate` (optional): Start date (auto-calculated from season if not provided)
-- `endDate` (optional): End date (auto-calculated from startDate + duration if not provided)
+- `startDateTime` (optional): Arrival date and time in ISO 8601 format (e.g., `"2024-12-15T14:30:00Z"`). The trip start date is calculated based on arrival time:
+  - If arrival is at night (after 8 PM), trip starts next day at 9 AM
+  - If arrival is in afternoon (before 6 PM), trip starts same day at 6 PM
+  - If arrival is between 6 PM and 8 PM, trip starts next day at 9 AM
+- `endDateTime` (optional): Departure date and time in ISO 8601 format (e.g., `"2024-12-22T18:00:00Z"`). If not provided, calculated from `startDateTime` + `duration`
+- `startDate` (optional): Start date (legacy field, auto-calculated from season if not provided)
+- `endDate` (optional): End date (legacy field, auto-calculated from startDate + duration if not provided)
 
 **Note:** When both `city` and `destinationPreference` are provided, `city` takes priority. The itinerary will be generated for the specific city with:
 - Cafes and restaurants along the route between activities

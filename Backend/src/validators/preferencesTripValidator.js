@@ -5,13 +5,26 @@ const { body } = require('express-validator');
  * Simplified payload structure
  */
 const preferencesTripValidator = [
-  // Destination (required)
+  // Destination fields - at least one should be provided
   body('destination')
-    .notEmpty()
-    .withMessage('Destination is required')
+    .optional()
     .trim()
     .isString()
     .withMessage('Destination must be a string'),
+  
+  body('state')
+    .optional()
+    .trim()
+    .isString()
+    .withMessage('State must be a string'),
+  
+  // At least one destination field must be provided
+  body().custom((value) => {
+    if (!value.destination && !value.state) {
+      throw new Error('At least one of destination or state must be provided');
+    }
+    return true;
+  }),
   
   // Travel Type (optional)
   body('travelType')
@@ -52,6 +65,27 @@ const preferencesTripValidator = [
     .withMessage('Budget amount must be a positive number')
     .toFloat(),
   
+  // Budget Range (optional) - accepts any string input
+  body('budgetRange')
+    .optional()
+    .trim()
+    .isString()
+    .withMessage('Budget range must be a string'),
+  
+  // Budget Range String (optional)
+  body('budgetRangeString')
+    .optional()
+    .isString()
+    .trim()
+    .withMessage('Budget range string must be a string'),
+  
+  // Origin (optional)
+  body('origin')
+    .optional()
+    .trim()
+    .isString()
+    .withMessage('Origin must be a string'),
+  
   // Travelers (optional)
   body('travelers')
     .optional()
@@ -64,7 +98,19 @@ const preferencesTripValidator = [
     .optional()
     .isString()
     .isLength({ min: 3, max: 3 })
-    .withMessage('Currency must be a 3-letter code (e.g., USD, INR)')
+    .withMessage('Currency must be a 3-letter code (e.g., USD, INR)'),
+  
+  // Start Date and Time (optional)
+  body('startDateTime')
+    .optional()
+    .isISO8601()
+    .withMessage('Start date and time must be a valid ISO 8601 datetime string (e.g., 2024-06-01T14:30:00Z)'),
+  
+  // End Date and Time (optional)
+  body('endDateTime')
+    .optional()
+    .isISO8601()
+    .withMessage('End date and time must be a valid ISO 8601 datetime string (e.g., 2024-06-08T18:00:00Z)')
 ];
 
 module.exports = {
