@@ -25,17 +25,53 @@ export class TripService extends BaseService<typeof tripRoutes> {
       onEvent?: (event: string, data: any) => void;
     }
   ): Promise<ApiResponse<any>> {
-    // Transform budget to amount for API
-    const payload = {
-      destination: preferences.destination,
+    // Transform preferences to API payload format
+    const payload: any = {
       travelType: preferences.travelType,
       interests: preferences.interests,
       season: preferences.season,
       duration: preferences.duration,
-      amount: preferences.budget,
+      budgetRangeString: preferences.budgetRangeString,
+      origin: preferences.origin,
+      state: preferences.state,
       travelers: preferences.travelers,
       currency: preferences.currency,
     };
+
+    // Add start and end datetime if available
+    if (preferences.startDateTime) {
+      payload.startDateTime = preferences.startDateTime;
+    }
+    if (preferences.endDateTime) {
+      payload.endDateTime = preferences.endDateTime;
+    }
+
+    // Legacy support: if old fields exist, use them
+    if (preferences.city && !preferences.state) {
+      payload.state = preferences.city;
+    }
+    if (preferences.destination && !preferences.state) {
+      payload.state = preferences.destination;
+    }
+    if (preferences.budget && !preferences.budgetRange) {
+      // Map numeric budget to range if needed
+      if (preferences.budget < 1000) {
+        payload.budgetRange = "budget";
+        payload.budgetRangeString = "$500-$1000";
+      } else if (preferences.budget < 3000) {
+        payload.budgetRange = "moderate";
+        payload.budgetRangeString = "$1000-$3000";
+      } else {
+        payload.budgetRange = "luxury";
+        payload.budgetRangeString = "$3000+";
+      }
+    }
+    if (preferences.arrivalDateTime && !preferences.startDateTime) {
+      payload.startDateTime = preferences.arrivalDateTime;
+    }
+    if (preferences.departureDateTime && !preferences.endDateTime) {
+      payload.endDateTime = preferences.departureDateTime;
+    }
 
     // Use streaming fetch for real-time updates
     return streamFetch(

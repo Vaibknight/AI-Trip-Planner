@@ -27,14 +27,17 @@ export default function TripForm({
 }: TripFormProps) {
   const [preferences, setPreferences] = useState<TripPreferences>(
     initialValues || {
-      destination: "",
+      origin: "",
+      state: "",
       travelType: "",
       interests: [],
       season: "",
       duration: 7,
-      budget: 0,
+      budgetRangeString: "",
       travelers: 2,
       currency: "USD",
+      startDateTime: "",
+      endDateTime: "",
     }
   );
 
@@ -45,19 +48,46 @@ export default function TripForm({
     }
   }, [initialValues]);
 
+  // Update departure datetime min when arrival datetime changes
+  useEffect(() => {
+    if (preferences.startDateTime && preferences.endDateTime) {
+      if (preferences.endDateTime < preferences.startDateTime) {
+        setPreferences((prev) => ({
+          ...prev,
+          endDateTime: prev.startDateTime,
+        }));
+      }
+    }
+  }, [preferences.startDateTime, preferences.endDateTime]);
+
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (
-      preferences.destination &&
+      preferences.origin &&
+      preferences.state &&
       preferences.travelType &&
       preferences.interests.length > 0 &&
       preferences.season &&
       preferences.duration &&
-      preferences.budget > 0 &&
+      preferences.budgetRangeString &&
       preferences.travelers &&
-      preferences.currency
+      preferences.currency &&
+      preferences.startDateTime &&
+      preferences.endDateTime
     ) {
-      onSubmit(preferences);
+      // Convert datetime-local format (YYYY-MM-DDTHH:mm) to ISO string for API
+      // datetime-local gives us local time, we need to convert to UTC ISO string
+      const payload: TripPreferences = {
+        ...preferences,
+        startDateTime: preferences.startDateTime
+          ? new Date(preferences.startDateTime).toISOString()
+          : undefined,
+        endDateTime: preferences.endDateTime
+          ? new Date(preferences.endDateTime).toISOString()
+          : undefined,
+      };
+      onSubmit(payload);
     }
   };
 
@@ -66,14 +96,29 @@ export default function TripForm({
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="w-full">
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+            Origin <span className="text-red-500 ml-1">*</span>
+          </label>
+          <input
+            type="text"
+            value={preferences.origin || ""}
+            onChange={(e) =>
+              setPreferences({ ...preferences, origin: e.target.value })
+            }
+            placeholder="Enter origin city (e.g., New York)"
+            className="w-full px-4 py-3 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg shadow-sm hover:border-blue-500 dark:hover:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors text-gray-900 dark:text-white"
+          />
+        </div>
+
         <Dropdown
-          label="Destination City"
+          label="State"
           options={cityOptions}
-          value={preferences.destination}
+          value={preferences.state}
           onChange={(value) =>
-            setPreferences({ ...preferences, destination: value as string })
+            setPreferences({ ...preferences, state: value as string })
           }
-          placeholder="Select destination city"
+          placeholder="Select state"
           required
         />
 
@@ -112,21 +157,18 @@ export default function TripForm({
 
         <div className="w-full">
           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            Budget <span className="text-red-500 ml-1">*</span>
+            Budget Range String <span className="text-red-500 ml-1">*</span>
           </label>
           <input
-            type="number"
-            min="0"
-            step="0.01"
-            value={preferences.budget || ""}
+            type="text"
+            value={preferences.budgetRangeString || ""}
             onChange={(e) =>
               setPreferences({
                 ...preferences,
-                budget: parseFloat(e.target.value) || 0,
+                budgetRangeString: e.target.value,
               })
             }
-            placeholder="Enter your budget amount"
-            required
+            placeholder="Enter budget range string (e.g., 10000)"
             className="w-full px-4 py-3 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg shadow-sm hover:border-blue-500 dark:hover:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors text-gray-900 dark:text-white"
           />
         </div>
@@ -152,6 +194,59 @@ export default function TripForm({
           placeholder="Select currency"
           required
         />
+
+        {/* Start Date and Time */}
+        <div className="w-full">
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+            Start Date & Time <span className="text-red-500 ml-1">*</span>
+          </label>
+          <input
+            type="datetime-local"
+            value={
+              preferences.startDateTime
+                ? preferences.startDateTime.includes("T")
+                  ? preferences.startDateTime.slice(0, 16)
+                  : preferences.startDateTime
+                : ""
+            }
+            onChange={(e) =>
+              setPreferences({
+                ...preferences,
+                startDateTime: e.target.value,
+              })
+            }
+            min={new Date().toISOString().slice(0, 16)}
+            className="w-full px-4 py-3 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg shadow-sm hover:border-blue-500 dark:hover:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors text-gray-900 dark:text-white"
+          />
+        </div>
+
+        {/* End Date and Time */}
+        <div className="w-full">
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+            End Date & Time <span className="text-red-500 ml-1">*</span>
+          </label>
+          <input
+            type="datetime-local"
+            value={
+              preferences.endDateTime
+                ? preferences.endDateTime.includes("T")
+                  ? preferences.endDateTime.slice(0, 16)
+                  : preferences.endDateTime
+                : ""
+            }
+            onChange={(e) =>
+              setPreferences({
+                ...preferences,
+                endDateTime: e.target.value,
+              })
+            }
+            min={
+              preferences.startDateTime ||
+              new Date().toISOString().slice(0, 16)
+            }
+            className="w-full px-4 py-3 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg shadow-sm hover:border-blue-500 dark:hover:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors text-gray-900 dark:text-white"
+          />
+        </div>
       </div>
 
       <MultiSelect

@@ -1,12 +1,23 @@
 export interface TripPreferences {
-  destination: string;
+  origin: string;
+  state: string;
   travelType: string;
   interests: string[];
   season: string;
   duration: number;
-  budget: number;
+  budgetRangeString: string;
   travelers: number;
   currency: string;
+  startDateTime?: string;
+  endDateTime?: string;
+  // Legacy fields for backward compatibility
+  destinationPreference?: string;
+  city?: string;
+  budgetRange?: string;
+  destination?: string;
+  budget?: number;
+  arrivalDateTime?: string;
+  departureDateTime?: string;
 }
 
 export interface TripPlan {

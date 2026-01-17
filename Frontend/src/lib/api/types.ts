@@ -24,21 +24,102 @@ export interface TripApiResponse {
   status: "success" | "error";
   message: string;
   data: {
-    trip: {
-      id: string;
-      title: string;
-      destination: string;
-      duration: number;
-      itineraryHtml: string;
-    };
+    trip: TripData;
+    itineraryHtml?: string;
+  };
+}
+
+export interface TripData {
+  userId?: string;
+  title: string;
+  description?: string;
+  origin?: string;
+  destination: string;
+  travelers: number;
+  destinations?: Destination[];
+  startDate?: string;
+  endDate?: string;
+  duration: number;
+  budget: Budget;
+  transportation?: TransportationDetails;
+  itinerary: DayItinerary[];
+  itineraryHtml?: string;
+  budgetHtml?: string;
+  preferences?: {
+    budget?: string;
+    travelStyle?: string;
+    interests?: string[];
+    dietaryRestrictions?: string[];
+    accessibility?: string[];
+  };
+  status?: string;
+  aiGenerated?: boolean;
+  highlights?: string[];
+  tips?: string[];
+  optimizations?: Optimization[];
+  alternativeActivities?: any[];
+  recommendations?: any[];
+  recommendedAreas?: any;
+  tags?: string[];
+  createdAt?: string;
+  _id?: string;
+  updatedAt?: string;
+  __v?: number;
+}
+
+export interface Destination {
+  name: string;
+  city: string;
+  country: string;
+  description: string;
+}
+
+export interface Budget {
+  total: number;
+  currency: string;
+  breakdown: {
+    accommodation: number;
+    transportation: number;
+    food: number;
+    activities: number;
+    other: number;
+  };
+  perPerson: number;
+  perDay: number;
+  status?: string;
+  variance?: number;
+  optimizations?: Optimization[];
+}
+
+export interface Optimization {
+  category: string;
+  suggestion: string;
+  potentialSavings: number;
+  _id?: string;
+}
+
+export interface TransportationDetails {
+  recommended: string;
+  options: string[];
+  estimatedCost: number;
+  localTransportation?: {
+    metro?: string;
+    autoRickshaw?: string;
+    eRickshaw?: string;
+    buses?: string;
+    other?: string;
+    tips?: string[];
   };
 }
 
 export interface DayItinerary {
+  date: string;
   day: number;
-  date?: string;
+  title: string;
   activities: Activity[];
-  meals: Meal[];
+  notes?: string;
+  estimatedCost?: number;
+  meals?: Meal[];
   accommodation?: Accommodation;
   transportation?: Transportation;
 }
@@ -46,11 +127,18 @@ export interface DayItinerary {
 export interface Activity {
   name: string;
   description: string;
-  duration: string;
-  cost?: number;
-  location: string;
-  time: string;
   type: string;
+  location: string;
+  timeSlot?: string;
+  startTime?: string;
+  endTime?: string;
+  duration: number;
+  cost?: {
+    amount: number;
+    currency: string;
+  };
+  notes?: string;
+  time?: string; // Legacy field
 }
 
 export interface Meal {

@@ -17,21 +17,40 @@ function generateCacheKey(preferences: TripPreferences): string {
   // Sort interests to ensure consistent keys
   const sortedInterests = [...preferences.interests].sort();
   
-  // Normalize budget more aggressively - round to nearest integer
-  // This handles cases where user enters 9999.94 vs API returns 10000
-  const normalizedBudget = typeof preferences.budget === 'number' 
-    ? Math.round(preferences.budget) 
-    : preferences.budget;
+  // Normalize budgetRangeString
+  const normalizedBudgetRangeString = preferences.budgetRangeString?.trim() || '';
+  
+  // Normalize dates (remove milliseconds and timezone for consistent matching)
+  const normalizeDate = (dateStr?: string) => {
+    if (!dateStr) return '';
+    try {
+      const date = new Date(dateStr);
+      return date.toISOString().split('.')[0] + 'Z'; // Remove milliseconds, keep Z
+    } catch {
+      return dateStr.trim();
+    }
+  };
   
   const keyData = {
+    origin: preferences.origin?.toLowerCase().trim(),
+    state: preferences.state?.toLowerCase().trim(),
+    // Legacy support
     destination: preferences.destination?.toLowerCase().trim(),
+    city: preferences.city?.toLowerCase().trim(),
     travelType: preferences.travelType?.toLowerCase().trim(),
     interests: sortedInterests.map(i => i.toLowerCase().trim()).sort(),
     season: preferences.season?.toLowerCase().trim(),
     duration: Number(preferences.duration),
-    budget: normalizedBudget,
+    budgetRangeString: normalizedBudgetRangeString,
     travelers: Number(preferences.travelers),
     currency: preferences.currency?.toUpperCase().trim(),
+    startDateTime: normalizeDate(preferences.startDateTime),
+    endDateTime: normalizeDate(preferences.endDateTime),
+    // Legacy fields for backward compatibility
+    budget: typeof preferences.budget === 'number' 
+      ? Math.round(preferences.budget) 
+      : preferences.budget,
+    budgetRange: preferences.budgetRange?.toLowerCase().trim(),
   };
   
   // Create a hash-like key from the preferences
@@ -99,17 +118,36 @@ export function getCachedTripPlan(
         const cachedPrefs = cachedPlan.preferences;
         const cachedBudget = Math.round(cachedPrefs.budget || 0);
         
-        // Compare all fields except budget (which we'll check separately)
+        // Compare all fields
+        const normalizeDate = (dateStr?: string) => {
+          if (!dateStr) return '';
+          try {
+            const date = new Date(dateStr);
+            return date.toISOString().split('.')[0] + 'Z';
+          } catch {
+            return dateStr.trim();
+          }
+        };
+        
         const matches = 
-          cachedPrefs.destination?.toLowerCase().trim() === preferences.destination?.toLowerCase().trim() &&
+          // New fields
+          (cachedPrefs.origin?.toLowerCase().trim() || cachedPrefs.destination?.toLowerCase().trim()) === 
+          (preferences.origin?.toLowerCase().trim() || preferences.destination?.toLowerCase().trim()) &&
+          (cachedPrefs.state?.toLowerCase().trim() || cachedPrefs.city?.toLowerCase().trim()) === 
+          (preferences.state?.toLowerCase().trim() || preferences.city?.toLowerCase().trim()) &&
           cachedPrefs.travelType?.toLowerCase().trim() === preferences.travelType?.toLowerCase().trim() &&
           JSON.stringify([...cachedPrefs.interests].sort().map(i => i.toLowerCase().trim())) === 
           JSON.stringify([...preferences.interests].sort().map(i => i.toLowerCase().trim())) &&
           cachedPrefs.season?.toLowerCase().trim() === preferences.season?.toLowerCase().trim() &&
           Number(cachedPrefs.duration) === Number(preferences.duration) &&
-          cachedBudget === normalizedBudget && // Budget within tolerance (rounded to int)
+          (cachedPrefs.budgetRangeString?.trim() || String(cachedBudget)) === 
+          (preferences.budgetRangeString?.trim() || String(normalizedBudget)) &&
           Number(cachedPrefs.travelers) === Number(preferences.travelers) &&
-          cachedPrefs.currency?.toUpperCase().trim() === preferences.currency?.toUpperCase().trim();
+          cachedPrefs.currency?.toUpperCase().trim() === preferences.currency?.toUpperCase().trim() &&
+          normalizeDate(cachedPrefs.startDateTime || cachedPrefs.arrivalDateTime) === 
+          normalizeDate(preferences.startDateTime || preferences.arrivalDateTime) &&
+          normalizeDate(cachedPrefs.endDateTime || cachedPrefs.departureDateTime) === 
+          normalizeDate(preferences.endDateTime || preferences.departureDateTime);
         
         if (matches) {
           console.log('[Cache] ✅ Found matching cache with budget tolerance:', key);
@@ -133,16 +171,36 @@ export function getCachedTripPlan(
  * Normalize preferences for consistent caching
  */
 function normalizePreferences(preferences: TripPreferences): TripPreferences {
+  const normalizeDate = (dateStr?: string) => {
+    if (!dateStr) return '';
+    try {
+      const date = new Date(dateStr);
+      return date.toISOString().split('.')[0] + 'Z'; // Remove milliseconds
+    } catch {
+      return dateStr.trim();
+    }
+  };
+
   return {
     ...preferences,
+    origin: preferences.origin?.toLowerCase().trim() || preferences.destination?.toLowerCase().trim() || '',
+    state: preferences.state?.toLowerCase().trim() || preferences.city?.toLowerCase().trim() || '',
+    // Legacy fields
     destination: preferences.destination?.toLowerCase().trim() || '',
+    city: preferences.city?.toLowerCase().trim() || '',
     travelType: preferences.travelType?.toLowerCase().trim() || '',
     interests: [...preferences.interests].sort().map(i => i.toLowerCase().trim()),
     season: preferences.season?.toLowerCase().trim() || '',
     duration: Number(preferences.duration),
+    budgetRangeString: preferences.budgetRangeString?.trim() || '',
     budget: Math.round(preferences.budget || 0), // Normalize budget to integer
     travelers: Number(preferences.travelers),
     currency: preferences.currency?.toUpperCase().trim() || '',
+    startDateTime: normalizeDate(preferences.startDateTime || preferences.arrivalDateTime),
+    endDateTime: normalizeDate(preferences.endDateTime || preferences.departureDateTime),
+    // Legacy datetime fields
+    arrivalDateTime: normalizeDate(preferences.arrivalDateTime),
+    departureDateTime: normalizeDate(preferences.departureDateTime),
   };
 }
 

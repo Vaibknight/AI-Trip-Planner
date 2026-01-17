@@ -74,7 +74,12 @@ export function useTripPlan(): UseTripPlanReturn {
           onEvent: (event, data) => {
             // Handle complete event - update plan immediately
             if (event === "complete" && data?.data?.trip) {
-              const tripPlan = data.data.trip;
+              const tripPlan = {
+                ...data.data.trip,
+                // Include itineraryHtml from data if available
+                itineraryHtml: data.data.itineraryHtml || data.data.trip.itineraryHtml,
+                budgetHtml: data.data.budgetHtml || data.data.trip.budgetHtml,
+              };
               setPlan(tripPlan);
               planSetFromStream = true;
               setProgress(null);
@@ -88,9 +93,16 @@ export function useTripPlan(): UseTripPlanReturn {
       if (response.success && response.data) {
         // Final update if not already set from streaming
         if (!planSetFromStream) {
-          setPlan(response.data);
+          // Handle both old format (response.data is trip) and new format (response.data.data.trip)
+          const tripData = response.data.trip || response.data;
+          const planData = {
+            ...tripData,
+            itineraryHtml: response.data.itineraryHtml || tripData.itineraryHtml,
+            budgetHtml: response.data.budgetHtml || tripData.budgetHtml,
+          };
+          setPlan(planData);
           // Cache the plan
-          setCachedTripPlan(preferences, response.data);
+          setCachedTripPlan(preferences, planData);
         }
         setProgress(null); // Clear progress when complete
       } else {

@@ -62,9 +62,20 @@ export const DURATIONS = [
 ];
 
 export const BUDGET_RANGES = [
-  { value: "budget", label: "Budget ($500-$1000)" },
-  { value: "moderate", label: "Moderate ($1000-$3000)" },
-  { value: "luxury", label: "Luxury ($3000+)" },
+  { value: "budget", label: "Budget", rangeString: "$500-$1000" },
+  { value: "moderate", label: "Moderate", rangeString: "$1000-$3000" },
+  { value: "luxury", label: "Luxury", rangeString: "$3000+" },
+];
+
+export const DESTINATION_PREFERENCES = [
+  { value: "Europe", label: "Europe" },
+  { value: "Asia", label: "Asia" },
+  { value: "North America", label: "North America" },
+  { value: "South America", label: "South America" },
+  { value: "Africa", label: "Africa" },
+  { value: "Oceania", label: "Oceania" },
+  { value: "Middle East", label: "Middle East" },
+  { value: "Any", label: "Any" },
 ];
 
 export const TRAVELERS = [
