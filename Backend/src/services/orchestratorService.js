@@ -6,6 +6,7 @@ const DestinationAgent = require('./agents/destinationAgent');
 const ItineraryAgent = require('./agents/itineraryAgent');
 const BudgetAgent = require('./agents/budgetAgent');
 const OptimizerAgent = require('./agents/optimizerAgent');
+const geocodingService = require('../utils/geocoding');
 
 class OrchestratorService {
   constructor() {
@@ -206,8 +207,8 @@ class OrchestratorService {
       }
       */
 
-      // Compile final trip plan
-      const tripPlan = this.compileTripPlan(tripData, intent, destinations, itinerary, budget, optimizations);
+      // Compile final trip plan (now async due to geocoding)
+      const tripPlan = await this.compileTripPlan(tripData, intent, destinations, itinerary, budget, optimizations);
 
       logger.info('Orchestrator: Trip plan completed', { tripId: tripPlan.id });
       return tripPlan;
@@ -219,8 +220,15 @@ class OrchestratorService {
 
   /**
    * Compile all agent outputs into a complete trip plan
+   * @param {Object} tripData - Trip data
+   * @param {Object} intent - Intent analysis
+   * @param {Object} destinations - Destination information
+   * @param {Object} itinerary - Itinerary data
+   * @param {Object} budget - Budget information
+   * @param {Object} optimizations - Optimization suggestions
+   * @returns {Promise<Object>} Complete trip plan
    */
-  compileTripPlan(tripData, intent, destinations, itinerary, budget, optimizations) {
+  async compileTripPlan(tripData, intent, destinations, itinerary, budget, optimizations) {
     const startDate = new Date(tripData.startDate);
     const endDate = new Date(tripData.endDate);
     const duration = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24));
@@ -246,6 +254,32 @@ class OrchestratorService {
       // Fallback: Create basic itinerary structure if AI didn't generate one
       logger.warn('Itinerary is empty, creating fallback structure');
       formattedItinerary = this.createFallbackItinerary(tripData, intent, destinations, duration, startDate);
+    }
+
+    // Enrich activities with coordinates using geocoding
+    const destinationCity = destinations.mainDestination?.city || destinations.mainDestination?.name || tripData.state || tripData.city;
+    logger.info('Orchestrator: Starting geocoding for activities', {
+      destinationCity,
+      totalDays: formattedItinerary.length,
+      totalActivities: formattedItinerary.reduce((sum, day) => sum + (day.activities?.length || 0), 0)
+    });
+
+    try {
+      // Enrich each day's activities with coordinates
+      for (const day of formattedItinerary) {
+        if (day.activities && Array.isArray(day.activities) && day.activities.length > 0) {
+          day.activities = await geocodingService.enrichActivitiesWithCoordinates(
+            day.activities,
+            destinationCity
+          );
+        }
+      }
+      logger.info('Orchestrator: Geocoding completed successfully');
+    } catch (geocodingError) {
+      logger.warn('Orchestrator: Geocoding failed, continuing without coordinates', {
+        error: geocodingError.message
+      });
+      // Continue without coordinates - activities will still be returned
     }
 
     // Format destinations
@@ -274,6 +308,16 @@ class OrchestratorService {
     
     // Generate local transportation HTML
     const localTransportHtml = this.generateLocalTransportHtml(destinations.transportation?.localTransportation);
+
+    // Enrich itinerary HTML with coordinates
+    let enrichedItineraryHtml = itinerary.html || '';
+    if (enrichedItineraryHtml) {
+      enrichedItineraryHtml = await this.enrichItineraryHtmlWithCoordinates(
+        enrichedItineraryHtml,
+        formattedItinerary,
+        destinationCity
+      );
+    }
 
     return {
       title: `${tripData.from || tripData.origin} → ${destinations.mainDestination.name}`,
@@ -312,8 +356,8 @@ class OrchestratorService {
       // Recommended areas for 2-3 day trips
       recommendedAreas: recommendedAreas,
       // HTML itinerary content (new format) - append local transportation and budget table if available
-      itineraryHtml: itinerary.html 
-        ? (itinerary.html + (localTransportHtml ? '\n\n' + localTransportHtml : '') + '\n\n' + budgetHtml)
+      itineraryHtml: enrichedItineraryHtml 
+        ? (enrichedItineraryHtml + (localTransportHtml ? '\n\n' + localTransportHtml : '') + '\n\n' + budgetHtml)
         : (localTransportHtml ? localTransportHtml + '\n\n' : '') + budgetHtml,
       // Budget breakdown table HTML (also available separately)
       budgetHtml: budgetHtml,
@@ -321,6 +365,138 @@ class OrchestratorService {
       status: 'confirmed',
       createdAt: new Date()
     };
+  }
+
+  /**
+   * Enrich itinerary HTML with coordinates by geocoding activities directly from HTML
+   * Adds data-lat and data-lon attributes to <li> tags
+   */
+  async enrichItineraryHtmlWithCoordinates(html, formattedItinerary, city) {
+    if (!html) {
+      return html;
+    }
+
+    try {
+      // First, try to use coordinates from structured itinerary if available
+      const activityCoordinatesMap = new Map();
+      
+      if (formattedItinerary && formattedItinerary.length > 0) {
+        formattedItinerary.forEach(day => {
+          if (day.activities && Array.isArray(day.activities)) {
+            day.activities.forEach(activity => {
+              if (activity.name && activity.coordinates) {
+                const activityName = activity.name.toLowerCase().trim();
+                activityCoordinatesMap.set(activityName, activity.coordinates);
+                
+                // Also try variations (without "Visit to", "Breakfast at", etc.)
+                const cleanName = activityName
+                  .replace(/^(visit to|visit|breakfast at|lunch at|dinner at|coffee at|explore|tour of|stroll through)\s+/i, '')
+                  .trim();
+                if (cleanName !== activityName && cleanName.length > 0) {
+                  activityCoordinatesMap.set(cleanName, activity.coordinates);
+                }
+              }
+            });
+          }
+        });
+      }
+
+      // Parse HTML and enrich <li> tags with coordinates
+      // Match pattern: <li>HH:MM — Activity name</li>
+      const liPattern = /<li(?:[^>]*)?>(\d{2}:\d{2})\s*—\s*([^<]+)<\/li>/gi;
+      const matches = Array.from(html.matchAll(liPattern));
+      
+      // Build replacement map
+      const replacements = new Map();
+      
+      // Process each match and geocode if needed
+      for (const match of matches) {
+        const [fullMatch, time, activityText] = match;
+        const activityName = activityText.trim();
+        const activityNameLower = activityName.toLowerCase();
+        
+        // Skip if already has coordinates
+        if (fullMatch.includes('data-lat')) {
+          continue;
+        }
+        
+        // Try to find coordinates from structured itinerary first
+        let coordinates = activityCoordinatesMap.get(activityNameLower);
+        
+        // If not found, try without common prefixes
+        if (!coordinates) {
+          const cleanName = activityNameLower
+            .replace(/^(visit to|visit|breakfast at|lunch at|dinner at|coffee at|explore|tour of|stroll through|nightlife at)\s+/i, '')
+            .trim();
+          if (cleanName.length > 0) {
+            coordinates = activityCoordinatesMap.get(cleanName);
+          }
+        }
+        
+        // If still not found, try partial matching
+        if (!coordinates) {
+          for (const [key, coords] of activityCoordinatesMap.entries()) {
+            if (key.length > 3 && (activityNameLower.includes(key) || key.includes(activityNameLower))) {
+              coordinates = coords;
+              break;
+            }
+          }
+        }
+        
+        // If still not found, geocode the activity directly from HTML
+        if (!coordinates) {
+          // Extract location name from activity text
+          const locationName = activityNameLower
+            .replace(/^(visit to|visit|breakfast at|lunch at|dinner at|coffee at|explore|tour of|stroll through|nightlife at)\s+/i, '')
+            .trim();
+          
+          // Skip generic activities
+          const genericPatterns = /^(check-in|check-out|explore|visit|stroll|nightlife)$/i;
+          if (locationName.length > 0 && !genericPatterns.test(locationName)) {
+            try {
+              // Geocode the location
+              coordinates = await geocodingService.geocode(locationName, city);
+              
+              if (coordinates) {
+                // Cache it for potential future matches
+                activityCoordinatesMap.set(activityNameLower, coordinates);
+                activityCoordinatesMap.set(locationName, coordinates);
+              }
+            } catch (geocodeError) {
+              logger.debug('Geocoding failed for activity', {
+                activityName,
+                locationName,
+                error: geocodeError.message
+              });
+            }
+          }
+        }
+        
+        // Store replacement if coordinates found
+        if (coordinates && coordinates.latitude && coordinates.longitude) {
+          const enrichedLi = `<li data-lat="${coordinates.latitude}" data-lon="${coordinates.longitude}">${time} — ${activityText}</li>`;
+          replacements.set(fullMatch, enrichedLi);
+        }
+      }
+      
+      // Apply all replacements
+      for (const [original, replacement] of replacements.entries()) {
+        html = html.replace(original, replacement);
+      }
+
+      logger.info('Orchestrator: Enriched itinerary HTML with coordinates', {
+        totalMatches: matches.length,
+        htmlLength: html.length,
+        cachedCoordinates: activityCoordinatesMap.size
+      });
+
+      return html;
+    } catch (error) {
+      logger.warn('Orchestrator: Failed to enrich HTML with coordinates', {
+        error: error.message
+      });
+      return html; // Return original HTML on error
+    }
   }
 
   /**
