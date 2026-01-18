@@ -2,6 +2,20 @@ This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-
 
 ## Getting Started
 
+### Environment Setup
+
+1. Create a `.env.local` file in the root directory:
+```bash
+COUNTRY_STATE_CITY_API_KEY=YOUR_API_KEY_HERE
+```
+
+2. Get your API key from [Country State City API](https://countrystatecity.in/)
+   - Sign up for a free account
+   - Get your API key from the dashboard
+   - Add it to `.env.local`
+
+### Running the Development Server
+
 First, run the development server:
 
 ```bash

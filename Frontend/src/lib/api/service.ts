@@ -33,6 +33,7 @@ export class TripService extends BaseService<typeof tripRoutes> {
       duration: preferences.duration,
       budgetRangeString: preferences.budgetRangeString,
       origin: preferences.origin,
+      country: preferences.country,
       state: preferences.state,
       travelers: preferences.travelers,
       currency: preferences.currency,

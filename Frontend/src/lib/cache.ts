@@ -33,6 +33,7 @@ function generateCacheKey(preferences: TripPreferences): string {
   
   const keyData = {
     origin: preferences.origin?.toLowerCase().trim(),
+    country: preferences.country?.toLowerCase().trim(),
     state: preferences.state?.toLowerCase().trim(),
     // Legacy support
     destination: preferences.destination?.toLowerCase().trim(),
@@ -133,6 +134,8 @@ export function getCachedTripPlan(
           // New fields
           (cachedPrefs.origin?.toLowerCase().trim() || cachedPrefs.destination?.toLowerCase().trim()) === 
           (preferences.origin?.toLowerCase().trim() || preferences.destination?.toLowerCase().trim()) &&
+          (cachedPrefs.country?.toLowerCase().trim() || '') === 
+          (preferences.country?.toLowerCase().trim() || '') &&
           (cachedPrefs.state?.toLowerCase().trim() || cachedPrefs.city?.toLowerCase().trim()) === 
           (preferences.state?.toLowerCase().trim() || preferences.city?.toLowerCase().trim()) &&
           cachedPrefs.travelType?.toLowerCase().trim() === preferences.travelType?.toLowerCase().trim() &&
@@ -184,6 +187,7 @@ function normalizePreferences(preferences: TripPreferences): TripPreferences {
   return {
     ...preferences,
     origin: preferences.origin?.toLowerCase().trim() || preferences.destination?.toLowerCase().trim() || '',
+    country: preferences.country?.toLowerCase().trim() || '',
     state: preferences.state?.toLowerCase().trim() || preferences.city?.toLowerCase().trim() || '',
     // Legacy fields
     destination: preferences.destination?.toLowerCase().trim() || '',

@@ -3,11 +3,9 @@
 import { useState, useEffect } from "react";
 import TripForm from "@/components/TripForm";
 import TripOutput from "@/components/TripOutput";
-import TripHistory from "@/components/TripHistory";
 import AuthContainer from "@/components/auth/AuthContainer";
 import { useTripPlan } from "@/hooks/useTripPlan";
 import { useAuth } from "@/contexts/AuthContext";
-import { saveTripToHistory } from "@/lib/storage";
 import { clearExpiredCache } from "@/lib/cache";
 import type { TripPreferences } from "@/types/trip";
 
@@ -15,27 +13,11 @@ export default function Home() {
   const { isAuthenticated, isLoading: authLoading, user, logout } = useAuth();
   const [tripPreferences, setTripPreferences] =
     useState<TripPreferences | null>(null);
-  const [formKey, setFormKey] = useState(0); // Force form reset when loading trip
   const { generatePlan, plan, isLoading, error, progress, isCached } = useTripPlan();
 
   const handleSubmit = async (preferences: TripPreferences) => {
     setTripPreferences(preferences);
     await generatePlan(preferences);
-  };
-
-  // Save to history when plan is generated
-  useEffect(() => {
-    if (plan && tripPreferences) {
-      saveTripToHistory(tripPreferences, plan);
-      // Dispatch event to refresh history
-      window.dispatchEvent(new Event("tripSaved"));
-    }
-  }, [plan, tripPreferences]);
-
-  const handleLoadTrip = (preferences: TripPreferences) => {
-    setTripPreferences(preferences);
-    // Force form to reset with new values
-    setFormKey((prev) => prev + 1);
   };
 
   // Clear expired cache on mount
@@ -133,7 +115,6 @@ export default function Home() {
                 Trip Preferences
               </h2>
               <TripForm
-                key={formKey}
                 onSubmit={handleSubmit}
                 isLoading={isLoading}
                 initialValues={tripPreferences}
@@ -209,9 +190,6 @@ export default function Home() {
           </div>
         </div>
       </div>
-
-      {/* Trip History Component */}
-      <TripHistory onLoadTrip={handleLoadTrip} />
     </div>
   );
 }

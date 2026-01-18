@@ -137,6 +137,10 @@ export interface Activity {
     amount: number;
     currency: string;
   };
+  coordinates?: {
+    latitude: number;
+    longitude: number;
+  };
   notes?: string;
   time?: string; // Legacy field
 }

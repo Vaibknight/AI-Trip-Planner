@@ -14,6 +14,9 @@ interface DropdownProps {
   onChange: (value: string | number) => void;
   placeholder?: string;
   required?: boolean;
+  disabled?: boolean;
+  error?: string | undefined;
+  showError?: boolean;
 }
 
 export default function Dropdown({
@@ -23,6 +26,9 @@ export default function Dropdown({
   onChange,
   placeholder = "Select an option",
   required = false,
+  disabled = false,
+  error,
+  showError = false,
 }: DropdownProps) {
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -51,8 +57,15 @@ export default function Dropdown({
       </label>
       <button
         type="button"
-        onClick={() => setIsOpen(!isOpen)}
-        className="w-full px-4 py-3 text-left bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg shadow-sm hover:border-blue-500 dark:hover:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors flex items-center justify-between"
+        onClick={() => !disabled && setIsOpen(!isOpen)}
+        disabled={disabled}
+        className={`w-full px-4 py-3 text-left bg-white dark:bg-gray-800 border rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:border-transparent transition-colors flex items-center justify-between ${
+          disabled
+            ? "opacity-50 cursor-not-allowed border-gray-300 dark:border-gray-600"
+            : showError && error
+            ? "border-red-500 focus:ring-red-500"
+            : "border-gray-300 dark:border-gray-600 hover:border-blue-500 dark:hover:border-blue-400 focus:ring-blue-500"
+        }`}
       >
         <span
           className={
@@ -99,6 +112,9 @@ export default function Dropdown({
             </button>
           ))}
         </div>
+      )}
+      {showError && error && (
+        <p className="mt-1 text-sm text-red-500">{error}</p>
       )}
     </div>
   );

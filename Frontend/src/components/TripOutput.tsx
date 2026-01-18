@@ -1,7 +1,24 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import type { TripPreferences } from "@/types/trip";
 import type { TripData } from "@/lib/api/types";
+
+// Dynamically import the map component to avoid SSR issues
+// Using CDN-based version to avoid module resolution issues
+const TripMap = dynamic(() => import("./TripMapCDN"), {
+  ssr: false,
+  loading: () => (
+    <div className="bg-white dark:bg-gray-800 rounded-lg p-6 border border-gray-200 dark:border-gray-700">
+      <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-4">
+        🗺️ Trip Map
+      </h3>
+      <div className="h-[500px] w-full rounded-lg bg-gray-100 dark:bg-gray-700 flex items-center justify-center">
+        <p className="text-gray-600 dark:text-gray-400">Loading map...</p>
+      </div>
+    </div>
+  ),
+});
 
 interface TripOutputProps {
   preferences: TripPreferences;
@@ -275,6 +292,9 @@ export default function TripOutput({ preferences, plan }: TripOutputProps) {
           )}
         </div>
       )}
+
+      {/* Trip Map */}
+      {plan && <TripMap plan={plan} />}
 
       {/* Transportation Details */}
       {plan.transportation && (

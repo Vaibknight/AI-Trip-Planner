@@ -1,5 +1,6 @@
 export interface TripPreferences {
   origin: string;
+  country: string;
   state: string;
   travelType: string;
   interests: string[];

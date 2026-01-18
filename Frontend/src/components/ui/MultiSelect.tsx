@@ -14,6 +14,8 @@ interface MultiSelectProps {
   onChange: (value: string[]) => void;
   placeholder?: string;
   required?: boolean;
+  error?: string | undefined;
+  showError?: boolean;
 }
 
 export default function MultiSelect({
@@ -23,6 +25,8 @@ export default function MultiSelect({
   onChange,
   placeholder = "Select options",
   required = false,
+  error,
+  showError = false,
 }: MultiSelectProps) {
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -62,7 +66,11 @@ export default function MultiSelect({
       <button
         type="button"
         onClick={() => setIsOpen(!isOpen)}
-        className="w-full px-4 py-3 text-left bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg shadow-sm hover:border-blue-500 dark:hover:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors flex items-center justify-between min-h-[48px]"
+        className={`w-full px-4 py-3 text-left bg-white dark:bg-gray-800 border rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:border-transparent transition-colors flex items-center justify-between min-h-[48px] ${
+          showError && error
+            ? "border-red-500 focus:ring-red-500"
+            : "border-gray-300 dark:border-gray-600 hover:border-blue-500 dark:hover:border-blue-400 focus:ring-blue-500"
+        }`}
       >
         <span
           className={
@@ -133,6 +141,9 @@ export default function MultiSelect({
             </button>
           ))}
         </div>
+      )}
+      {showError && error && (
+        <p className="mt-1 text-sm text-red-500">{error}</p>
       )}
     </div>
   );
