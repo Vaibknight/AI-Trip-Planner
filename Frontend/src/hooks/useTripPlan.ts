@@ -36,23 +36,40 @@ export function useTripPlan(): UseTripPlanReturn {
 
     // Check cache first (unless bypassed)
     if (!bypassCache) {
-      const cacheDebug = debugCache(preferences);
-      console.log('[useTripPlan] Cache Debug:', cacheDebug);
-      
-      const cachedPlan = getCachedTripPlan(preferences);
-      if (cachedPlan) {
-        console.log('[useTripPlan] ✅ Cache HIT! Using cached plan, SKIPPING API call.');
-        setIsCached(true);
-        // Simulate a small delay for better UX (shows cache was used)
-        await new Promise(resolve => setTimeout(resolve, 300));
-        setPlan(cachedPlan.plan);
-        setIsLoading(false);
-        return; // CRITICAL: Return early to prevent API call
-      } else {
-        console.log('[useTripPlan] ❌ Cache MISS. Proceeding with API call.');
+      try {
+        const cacheDebug = debugCache(preferences);
+        console.log('[useTripPlan] 🔍 Checking cache for preferences:', {
+          origin: preferences.origin,
+          country: preferences.country,
+          state: preferences.state,
+          duration: preferences.duration,
+          travelers: preferences.travelers,
+        });
+        console.log('[useTripPlan] Cache Debug:', cacheDebug);
+        
+        const cachedPlan = getCachedTripPlan(preferences);
+        if (cachedPlan && cachedPlan.plan) {
+          console.log('[useTripPlan] ✅ Cache HIT! Using cached plan from localStorage, SKIPPING API call.');
+          console.log('[useTripPlan] Cached plan details:', {
+            cachedAt: cachedPlan.cachedAt,
+            expiresAt: cachedPlan.expiresAt,
+            hasPlan: !!cachedPlan.plan,
+          });
+          setIsCached(true);
+          // Simulate a small delay for better UX (shows cache was used)
+          await new Promise(resolve => setTimeout(resolve, 300));
+          setPlan(cachedPlan.plan);
+          setIsLoading(false);
+          return; // CRITICAL: Return early to prevent API call
+        } else {
+          console.log('[useTripPlan] ❌ Cache MISS. No matching cached plan found. Proceeding with API call.');
+        }
+      } catch (error) {
+        console.error('[useTripPlan] Error checking cache:', error);
+        console.log('[useTripPlan] Proceeding with API call due to cache error.');
       }
     } else {
-      console.log('[useTripPlan] ⚠️ Cache bypassed, making API call.');
+      console.log('[useTripPlan] ⚠️ Cache bypassed by user, making API call.');
     }
 
     let planSetFromStream = false;
@@ -83,8 +100,13 @@ export function useTripPlan(): UseTripPlanReturn {
               setPlan(tripPlan);
               planSetFromStream = true;
               setProgress(null);
-              // Cache the plan immediately
-              setCachedTripPlan(preferences, tripPlan);
+              // Cache the plan immediately in localStorage
+              try {
+                setCachedTripPlan(preferences, tripPlan);
+                console.log('[useTripPlan] ✅ Plan cached successfully in localStorage');
+              } catch (cacheError) {
+                console.error('[useTripPlan] Failed to cache plan:', cacheError);
+              }
             }
           },
         }
@@ -101,8 +123,13 @@ export function useTripPlan(): UseTripPlanReturn {
             budgetHtml: response.data.budgetHtml || tripData.budgetHtml,
           };
           setPlan(planData);
-          // Cache the plan
-          setCachedTripPlan(preferences, planData);
+          // Cache the plan in localStorage
+          try {
+            setCachedTripPlan(preferences, planData);
+            console.log('[useTripPlan] ✅ Plan cached successfully in localStorage');
+          } catch (cacheError) {
+            console.error('[useTripPlan] Failed to cache plan:', cacheError);
+          }
         }
         setProgress(null); // Clear progress when complete
       } else {

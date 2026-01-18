@@ -159,36 +159,7 @@ export default function TripForm({
     }
   }, [initialValues]);
 
-  // Calculate endDateTime based on startDateTime + duration
-  useEffect(() => {
-    if (preferences.startDateTime && preferences.duration) {
-      const startDate = new Date(preferences.startDateTime);
-      const endDate = new Date(startDate);
-      endDate.setDate(endDate.getDate() + preferences.duration);
-      
-      // Format to datetime-local format (YYYY-MM-DDTHH:mm)
-      const endDateTimeString = endDate.toISOString().slice(0, 16);
-      
-      // Only update if the calculated date is different from current
-      if (preferences.endDateTime !== endDateTimeString) {
-        setPreferences((prev) => ({
-          ...prev,
-          endDateTime: endDateTimeString,
-        }));
-      }
-    }
-  }, [preferences.startDateTime, preferences.duration]);
-
-  // Helper function to calculate minimum end date based on start date + duration
-  const getMinEndDateTime = (): string => {
-    if (preferences.startDateTime && preferences.duration) {
-      const startDate = new Date(preferences.startDateTime);
-      const minEndDate = new Date(startDate);
-      minEndDate.setDate(minEndDate.getDate() + preferences.duration);
-      return minEndDate.toISOString().slice(0, 16);
-    }
-    return preferences.startDateTime || new Date().toISOString().slice(0, 16);
-  };
+  // Removed auto-calculation - users can select departure date freely
 
   // Validation functions
   const validateField = (fieldName: string, value: any): string | undefined => {
@@ -447,25 +418,11 @@ export default function TripForm({
           value={preferences.duration}
           onChange={(value) => {
             const newDuration = value as number;
-            setPreferences((prev) => {
-              // If startDateTime exists, auto-calculate endDateTime
-              if (prev.startDateTime) {
-                const startDate = new Date(prev.startDateTime);
-                const endDate = new Date(startDate);
-                endDate.setDate(endDate.getDate() + newDuration);
-                const endDateTimeString = endDate.toISOString().slice(0, 16);
-                
-                return {
-                  ...prev,
-                  duration: newDuration,
-                  endDateTime: endDateTimeString,
-                };
-              }
-              return {
-                ...prev,
-                duration: newDuration,
-              };
-            });
+            setPreferences((prev) => ({
+              ...prev,
+              duration: newDuration,
+              // Removed auto-calculation - users can set endDateTime freely
+            }));
             if (isSubmitted && fieldErrors.duration) {
               const error = validateField("duration", value);
               setFieldErrors((prev) => ({
@@ -566,25 +523,11 @@ export default function TripForm({
             }
             onChange={(e) => {
               const newStartDateTime = e.target.value;
-              setPreferences((prev) => {
-                // If duration exists, auto-calculate endDateTime
-                if (prev.duration) {
-                  const startDate = new Date(newStartDateTime);
-                  const endDate = new Date(startDate);
-                  endDate.setDate(endDate.getDate() + prev.duration);
-                  const endDateTimeString = endDate.toISOString().slice(0, 16);
-                  
-                  return {
-                    ...prev,
-                    startDateTime: newStartDateTime,
-                    endDateTime: endDateTimeString,
-                  };
-                }
-                return {
-                  ...prev,
-                  startDateTime: newStartDateTime,
-                };
-              });
+              setPreferences((prev) => ({
+                ...prev,
+                startDateTime: newStartDateTime,
+                // Removed auto-calculation - users can set endDateTime freely
+              }));
               if (isSubmitted && fieldErrors.startDateTime) {
                 const error = validateField("startDateTime", newStartDateTime);
                 setFieldErrors((prev) => ({
@@ -609,11 +552,6 @@ export default function TripForm({
         <div className="w-full">
           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
             End Date & Time <span className="text-red-500 ml-1">*</span>
-            {preferences.startDateTime && preferences.duration && (
-              <span className="text-xs text-gray-500 dark:text-gray-400 ml-2">
-                (Auto-calculated: {preferences.duration} day{preferences.duration > 1 ? 's' : ''} from start)
-              </span>
-            )}
           </label>
           <input
             type="datetime-local"
@@ -638,12 +576,9 @@ export default function TripForm({
                 }));
               }
             }}
-            min={getMinEndDateTime()}
-            disabled={!preferences.startDateTime || !preferences.duration}
+            min={new Date().toISOString().slice(0, 16)}
             className={`w-full px-4 py-3 bg-white dark:bg-gray-800 border rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:border-transparent transition-colors ${
-              !preferences.startDateTime || !preferences.duration
-                ? "opacity-50 cursor-not-allowed border-gray-300 dark:border-gray-600"
-                : isSubmitted && fieldErrors.endDateTime
+              isSubmitted && fieldErrors.endDateTime
                 ? "border-red-500 focus:ring-red-500 text-gray-900 dark:text-white"
                 : "border-gray-300 dark:border-gray-600 hover:border-blue-500 dark:hover:border-blue-400 focus:ring-blue-500 text-gray-900 dark:text-white"
             }`}
