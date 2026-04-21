@@ -230,6 +230,35 @@ const tripSchema = new mongoose.Schema({
     costDifference: { type: Number, default: 0 }
   }],
   recommendations: [String],
+  weather: {
+    source: String,
+    unit: {
+      type: String,
+      default: 'C'
+    },
+    location: {
+      city: String,
+      country: String,
+      latitude: Number,
+      longitude: Number
+    },
+    current: {
+      temperatureC: Number,
+      feelsLikeC: Number,
+      humidity: Number,
+      windKph: Number,
+      condition: String,
+      observedAt: Date
+    },
+    forecast: [{
+      date: String,
+      minC: Number,
+      maxC: Number,
+      rainProbability: Number,
+      condition: String
+    }],
+    lastUpdated: Date
+  },
   recommendedAreas: [String], // Recommended areas/neighborhoods for 2-3 day trips
   tags: [String],
   createdAt: {

@@ -413,8 +413,10 @@ const planTripWithPreferencesSSE = async (req, res, next) => {
           title: trip.title,
           destination: trip.destination,
           duration: trip.duration,
-          itineraryHtml: trip.itineraryHtml
-        }
+          itineraryHtml: trip.itineraryHtml,
+          weather: trip.weather || null
+        },
+        weather: trip.weather || null
       }
     });
 

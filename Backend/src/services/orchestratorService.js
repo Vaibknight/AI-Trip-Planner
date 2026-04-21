@@ -7,6 +7,7 @@ const ItineraryAgent = require('./agents/itineraryAgent');
 const BudgetAgent = require('./agents/budgetAgent');
 const OptimizerAgent = require('./agents/optimizerAgent');
 const geocodingService = require('../utils/geocoding');
+const weatherService = require('./weatherService');
 
 class OrchestratorService {
   constructor() {
@@ -207,8 +208,22 @@ class OrchestratorService {
       }
       */
 
+      // Fetch destination weather (non-blocking for core flow on failures)
+      const weather = await weatherService.getDestinationWeather({
+        city: destinations.mainDestination?.city || destinations.mainDestination?.name || tripData.state || tripData.city,
+        country: destinations.mainDestination?.country || ''
+      });
+
       // Compile final trip plan (now async due to geocoding)
-      const tripPlan = await this.compileTripPlan(tripData, intent, destinations, itinerary, budget, optimizations);
+      const tripPlan = await this.compileTripPlan(
+        tripData,
+        intent,
+        destinations,
+        itinerary,
+        budget,
+        optimizations,
+        weather
+      );
 
       logger.info('Orchestrator: Trip plan completed', { tripId: tripPlan.id });
       return tripPlan;
@@ -228,7 +243,7 @@ class OrchestratorService {
    * @param {Object} optimizations - Optimization suggestions
    * @returns {Promise<Object>} Complete trip plan
    */
-  async compileTripPlan(tripData, intent, destinations, itinerary, budget, optimizations) {
+  async compileTripPlan(tripData, intent, destinations, itinerary, budget, optimizations, weather = null) {
     const startDate = new Date(tripData.startDate);
     const endDate = new Date(tripData.endDate);
     const duration = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24));
@@ -353,6 +368,7 @@ class OrchestratorService {
       optimizations: optimizations.optimizations || [],
       alternativeActivities: optimizations.alternativeActivities || [],
       recommendations: optimizations.finalRecommendations || [],
+      weather,
       // Recommended areas for 2-3 day trips
       recommendedAreas: recommendedAreas,
       // HTML itinerary content (new format) - append local transportation and budget table if available
