@@ -59,6 +59,8 @@ export interface TripData {
   optimizations?: Optimization[];
   alternativeActivities?: any[];
   recommendations?: any[];
+  weather?: WeatherDetails;
+  hotelBooking?: HotelBookingDetails;
   recommendedAreas?: any;
   tags?: string[];
   createdAt?: string;
@@ -110,6 +112,53 @@ export interface TransportationDetails {
     other?: string;
     tips?: string[];
   };
+}
+
+export interface WeatherDetails {
+  source?: string;
+  unit?: "C" | "F" | string;
+  location?: {
+    city?: string;
+    country?: string;
+    latitude?: number;
+    longitude?: number;
+  };
+  current?: {
+    temperatureC?: number;
+    temperatureF?: number;
+    feelsLikeC?: number;
+    feelsLikeF?: number;
+    humidity?: number;
+    windKph?: number;
+    windMph?: number;
+    condition?: string;
+    observedAt?: string;
+  };
+  forecast?: WeatherForecastDay[];
+  lastUpdated?: string;
+}
+
+export interface WeatherForecastDay {
+  date: string;
+  minC?: number;
+  maxC?: number;
+  minF?: number;
+  maxF?: number;
+  rainProbability?: number;
+  condition?: string;
+  _id?: string;
+}
+
+export interface HotelBookingDetails {
+  budgetFit?: string;
+  estimatedNightlyRange?: string;
+  links?: HotelBookingLink[];
+  note?: string;
+}
+
+export interface HotelBookingLink {
+  label: string;
+  url: string;
 }
 
 export interface DayItinerary {

@@ -96,6 +96,7 @@ export function useTripPlan(): UseTripPlanReturn {
                 // Include itineraryHtml from data if available
                 itineraryHtml: data.data.itineraryHtml || data.data.trip.itineraryHtml,
                 budgetHtml: data.data.budgetHtml || data.data.trip.budgetHtml,
+                hotelBooking: data.data.hotelBooking || data.data.trip.hotelBooking,
               };
               setPlan(tripPlan);
               planSetFromStream = true;
@@ -121,6 +122,7 @@ export function useTripPlan(): UseTripPlanReturn {
             ...tripData,
             itineraryHtml: response.data.itineraryHtml || tripData.itineraryHtml,
             budgetHtml: response.data.budgetHtml || tripData.budgetHtml,
+            hotelBooking: response.data.hotelBooking || tripData.hotelBooking,
           };
           setPlan(planData);
           // Cache the plan in localStorage
