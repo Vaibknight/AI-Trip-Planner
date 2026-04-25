@@ -1,6 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import { useMemo } from "react";
 import type { TripPreferences } from "@/types/trip";
 import type { TripData } from "@/lib/api/types";
 
@@ -65,6 +66,67 @@ export default function TripOutput({ preferences, plan }: TripOutputProps) {
       return dateString;
     }
   };
+
+  const formatWeatherTemp = (value?: number) =>
+    typeof value === "number" ? `${value.toFixed(1)}°C` : "N/A";
+
+  const hotelBookingFromHtml = useMemo(() => {
+    if (!plan.itineraryHtml) return null;
+
+    try {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(plan.itineraryHtml, "text/html");
+      const sectionHeading = Array.from(doc.querySelectorAll("h1, h2, h3")).find((el) =>
+        /hotel booking suggestions/i.test(el.textContent || "")
+      );
+
+      if (!sectionHeading) return null;
+
+      const result: {
+        budgetFit?: string;
+        estimatedNightlyRange?: string;
+        links: Array<{ label: string; url: string }>;
+        note?: string;
+      } = { links: [] };
+
+      let node = sectionHeading.nextElementSibling;
+      while (node && !/^H[1-3]$/i.test(node.tagName)) {
+        if (node.tagName === "P") {
+          const text = node.textContent || "";
+          const budgetMatch = text.match(/Budget fit:\s*([^|]+)/i);
+          const rangeMatch = text.match(/Estimated nightly range:\s*(.+)$/i);
+          if (budgetMatch) result.budgetFit = budgetMatch[1].trim();
+          if (rangeMatch) result.estimatedNightlyRange = rangeMatch[1].trim();
+          if (!result.note && !budgetMatch && !rangeMatch && text.trim()) {
+            result.note = text.trim();
+          }
+        }
+
+        if (node.tagName === "DIV" || node.tagName === "P") {
+          const anchors = Array.from(node.querySelectorAll("a"));
+          for (const anchor of anchors) {
+            const label = (anchor.textContent || "").trim();
+            const url = anchor.getAttribute("href") || "";
+            if (label && url) {
+              result.links.push({ label, url });
+            }
+          }
+        }
+
+        node = node.nextElementSibling;
+      }
+
+      if (!result.links.length && !result.budgetFit && !result.estimatedNightlyRange && !result.note) {
+        return null;
+      }
+
+      return result;
+    } catch {
+      return null;
+    }
+  }, [plan.itineraryHtml]);
+
+  const hotelBookingData = plan.hotelBooking || hotelBookingFromHtml;
 
   return (
     <div className="space-y-6">
@@ -295,6 +357,156 @@ export default function TripOutput({ preferences, plan }: TripOutputProps) {
 
       {/* Trip Map */}
       {plan && <TripMap plan={plan} />}
+
+      {/* Hotel Booking Suggestions */}
+      {hotelBookingData && (
+        <div className="bg-white dark:bg-gray-800 rounded-lg p-6 border border-gray-200 dark:border-gray-700">
+          <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-4">
+            🏨 Hotel Booking Suggestions
+          </h3>
+
+          {(hotelBookingData.budgetFit || hotelBookingData.estimatedNightlyRange) && (
+            <p className="text-sm text-gray-700 dark:text-gray-300 mb-4">
+              {hotelBookingData.budgetFit && (
+                <>
+                  <strong>Budget fit:</strong> {hotelBookingData.budgetFit}
+                </>
+              )}
+              {hotelBookingData.budgetFit && hotelBookingData.estimatedNightlyRange && " | "}
+              {hotelBookingData.estimatedNightlyRange && (
+                <>
+                  <strong>Estimated nightly range:</strong> {hotelBookingData.estimatedNightlyRange}
+                </>
+              )}
+            </p>
+          )}
+
+          {hotelBookingData.links && hotelBookingData.links.length > 0 && (
+            <div className="flex flex-wrap gap-3 mb-4">
+              {hotelBookingData.links.map((link, idx) => (
+                <a
+                  key={`${link.url}-${idx}`}
+                  href={link.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-block px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-600 text-sm font-medium text-gray-800 dark:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+                >
+                  {link.label}
+                </a>
+              ))}
+            </div>
+          )}
+
+          {hotelBookingData.note && (
+            <p className="text-xs text-gray-500 dark:text-gray-400">{hotelBookingData.note}</p>
+          )}
+        </div>
+      )}
+
+      {/* Weather Details */}
+      {plan.weather && (
+        <div className="bg-white dark:bg-gray-800 rounded-lg p-6 border border-gray-200 dark:border-gray-700">
+          <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-4">
+            🌤️ Weather Overview
+          </h3>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+            <div className="bg-sky-50 dark:bg-sky-900/20 rounded-lg p-4">
+              <p className="text-sm text-gray-600 dark:text-gray-400">Location</p>
+              <p className="text-lg font-semibold text-gray-900 dark:text-white">
+                {plan.weather.location?.city || plan.destination}
+                {plan.weather.location?.country ? `, ${plan.weather.location.country}` : ""}
+              </p>
+            </div>
+            <div className="bg-blue-50 dark:bg-blue-900/20 rounded-lg p-4">
+              <p className="text-sm text-gray-600 dark:text-gray-400">Condition</p>
+              <p className="text-lg font-semibold text-gray-900 dark:text-white">
+                {plan.weather.current?.condition || "N/A"}
+              </p>
+            </div>
+            <div className="bg-indigo-50 dark:bg-indigo-900/20 rounded-lg p-4">
+              <p className="text-sm text-gray-600 dark:text-gray-400">Temperature</p>
+              <p className="text-lg font-semibold text-gray-900 dark:text-white">
+                {formatWeatherTemp(plan.weather.current?.temperatureC)}
+              </p>
+            </div>
+            <div className="bg-cyan-50 dark:bg-cyan-900/20 rounded-lg p-4">
+              <p className="text-sm text-gray-600 dark:text-gray-400">Feels Like</p>
+              <p className="text-lg font-semibold text-gray-900 dark:text-white">
+                {formatWeatherTemp(plan.weather.current?.feelsLikeC)}
+              </p>
+            </div>
+          </div>
+
+          {(typeof plan.weather.current?.humidity === "number" ||
+            typeof plan.weather.current?.windKph === "number" ||
+            plan.weather.current?.observedAt) && (
+            <div className="mb-6 text-sm text-gray-700 dark:text-gray-300">
+              {typeof plan.weather.current?.humidity === "number" && (
+                <span className="mr-4">Humidity: {plan.weather.current.humidity}%</span>
+              )}
+              {typeof plan.weather.current?.windKph === "number" && (
+                <span className="mr-4">Wind: {plan.weather.current.windKph} km/h</span>
+              )}
+              {plan.weather.current?.observedAt && (
+                <span>Observed: {formatDateTime(plan.weather.current.observedAt)}</span>
+              )}
+            </div>
+          )}
+
+          {plan.weather.forecast && plan.weather.forecast.length > 0 && (
+            <div>
+              <h4 className="text-lg font-semibold text-gray-900 dark:text-white mb-3">
+                5-Day Forecast
+              </h4>
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse">
+                  <thead>
+                    <tr className="bg-gray-100 dark:bg-gray-700">
+                      <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-600">
+                        Date
+                      </th>
+                      <th className="px-4 py-3 text-right text-sm font-semibold text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-600">
+                        Min
+                      </th>
+                      <th className="px-4 py-3 text-right text-sm font-semibold text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-600">
+                        Max
+                      </th>
+                      <th className="px-4 py-3 text-right text-sm font-semibold text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-600">
+                        Rain %
+                      </th>
+                      <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-600">
+                        Condition
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {plan.weather.forecast.map((day, idx) => (
+                      <tr key={`${day.date}-${idx}`} className="border-b border-gray-200 dark:border-gray-700">
+                        <td className="px-4 py-3 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600">
+                          {day.date}
+                        </td>
+                        <td className="px-4 py-3 text-right text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-600">
+                          {formatWeatherTemp(day.minC)}
+                        </td>
+                        <td className="px-4 py-3 text-right text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-600">
+                          {formatWeatherTemp(day.maxC)}
+                        </td>
+                        <td className="px-4 py-3 text-right text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-600">
+                          {typeof day.rainProbability === "number" ? `${day.rainProbability}%` : "N/A"}
+                        </td>
+                        <td className="px-4 py-3 text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-600">
+                          {day.condition || "N/A"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Transportation Details */}
       {plan.transportation && (

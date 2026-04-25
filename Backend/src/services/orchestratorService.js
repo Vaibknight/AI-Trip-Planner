@@ -7,6 +7,7 @@ const ItineraryAgent = require('./agents/itineraryAgent');
 const BudgetAgent = require('./agents/budgetAgent');
 const OptimizerAgent = require('./agents/optimizerAgent');
 const geocodingService = require('../utils/geocoding');
+const weatherService = require('./weatherService');
 
 class OrchestratorService {
   constructor() {
@@ -207,8 +208,22 @@ class OrchestratorService {
       }
       */
 
+      // Fetch destination weather (non-blocking for core flow on failures)
+      const weather = await weatherService.getDestinationWeather({
+        city: destinations.mainDestination?.city || destinations.mainDestination?.name || tripData.state || tripData.city,
+        country: destinations.mainDestination?.country || ''
+      });
+
       // Compile final trip plan (now async due to geocoding)
-      const tripPlan = await this.compileTripPlan(tripData, intent, destinations, itinerary, budget, optimizations);
+      const tripPlan = await this.compileTripPlan(
+        tripData,
+        intent,
+        destinations,
+        itinerary,
+        budget,
+        optimizations,
+        weather
+      );
 
       logger.info('Orchestrator: Trip plan completed', { tripId: tripPlan.id });
       return tripPlan;
@@ -228,7 +243,7 @@ class OrchestratorService {
    * @param {Object} optimizations - Optimization suggestions
    * @returns {Promise<Object>} Complete trip plan
    */
-  async compileTripPlan(tripData, intent, destinations, itinerary, budget, optimizations) {
+  async compileTripPlan(tripData, intent, destinations, itinerary, budget, optimizations, weather = null) {
     const startDate = new Date(tripData.startDate);
     const endDate = new Date(tripData.endDate);
     const duration = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24));
@@ -303,6 +318,16 @@ class OrchestratorService {
       ? destinations.mainDestination.keyAreas.slice(0, 5) // Limit to top 5 areas
       : null;
 
+    // Generate budget-aware booking links HTML
+    const bookingLinksHtml = this.generateBookingLinksHtml({
+      destination: destinations.mainDestination?.name || destinations.mainDestination?.city || destinationCity,
+      startDate,
+      endDate,
+      travelers: tripData.travelers || 1,
+      budget,
+      budgetCategory: intent.budgetCategory || tripData.budgetRange || 'moderate'
+    });
+
     // Generate budget breakdown table HTML
     const budgetHtml = this.generateBudgetTableHtml(budget, duration, tripData.travelers || 1);
     
@@ -353,12 +378,13 @@ class OrchestratorService {
       optimizations: optimizations.optimizations || [],
       alternativeActivities: optimizations.alternativeActivities || [],
       recommendations: optimizations.finalRecommendations || [],
+      weather,
       // Recommended areas for 2-3 day trips
       recommendedAreas: recommendedAreas,
-      // HTML itinerary content (new format) - append local transportation and budget table if available
-      itineraryHtml: enrichedItineraryHtml 
-        ? (enrichedItineraryHtml + (localTransportHtml ? '\n\n' + localTransportHtml : '') + '\n\n' + budgetHtml)
-        : (localTransportHtml ? localTransportHtml + '\n\n' : '') + budgetHtml,
+      // HTML itinerary content (new format) - append booking links, transportation, and budget sections
+      itineraryHtml: enrichedItineraryHtml
+        ? [enrichedItineraryHtml, bookingLinksHtml, localTransportHtml, budgetHtml].filter(Boolean).join('\n\n')
+        : [bookingLinksHtml, localTransportHtml, budgetHtml].filter(Boolean).join('\n\n'),
       // Budget breakdown table HTML (also available separately)
       budgetHtml: budgetHtml,
       aiGenerated: true,
@@ -497,6 +523,61 @@ class OrchestratorService {
       });
       return html; // Return original HTML on error
     }
+  }
+
+  /**
+   * Generate budget-aware outbound booking links (no API integration required)
+   */
+  generateBookingLinksHtml({ destination, startDate, endDate, travelers = 1, budget, budgetCategory = 'moderate' }) {
+    if (!destination || !startDate || !endDate) {
+      return '';
+    }
+
+    const checkIn = new Date(startDate).toISOString().split('T')[0];
+    const checkOut = new Date(endDate).toISOString().split('T')[0];
+    const adults = Math.max(1, parseInt(travelers, 10) || 1);
+    const rooms = Math.max(1, Math.ceil(adults / 2));
+    const encodedDestination = encodeURIComponent(destination);
+
+    const accommodationTotal = budget?.breakdown?.accommodation || 0;
+    const nights = Math.max(1, Math.ceil((new Date(endDate) - new Date(startDate)) / (1000 * 60 * 60 * 24)));
+    const baseNightly = accommodationTotal > 0 ? Math.round(accommodationTotal / nights) : 2500;
+
+    const rangesByCategory = {
+      budget: {
+        label: 'Save more',
+        min: Math.max(500, Math.round(baseNightly * 0.6)),
+        max: Math.max(1000, Math.round(baseNightly * 0.95))
+      },
+      moderate: {
+        label: 'Best for your budget',
+        min: Math.max(1000, Math.round(baseNightly * 0.9)),
+        max: Math.max(2000, Math.round(baseNightly * 1.25))
+      },
+      luxury: {
+        label: 'More comfort',
+        min: Math.max(2500, Math.round(baseNightly * 1.4)),
+        max: Math.max(4000, Math.round(baseNightly * 2.2))
+      }
+    };
+
+    const normalizedCategory = (budgetCategory || 'moderate').toLowerCase();
+    const currentRange = rangesByCategory[normalizedCategory] || rangesByCategory.moderate;
+
+    const bookingComUrl = `https://www.booking.com/searchresults.html?ss=${encodedDestination}&checkin=${checkIn}&checkout=${checkOut}&group_adults=${adults}&no_rooms=${rooms}`;
+    const agodaUrl = `https://www.agoda.com/search?city=${encodedDestination}&checkIn=${checkIn}&checkOut=${checkOut}&adults=${adults}&rooms=${rooms}`;
+    const googleHotelsUrl = `https://www.google.com/travel/hotels/${encodedDestination}?q=hotels%20in%20${encodedDestination}%20from%20${checkIn}%20to%20${checkOut}`;
+
+    return `
+<h2>🏨 Hotel Booking Suggestions</h2>
+<p><strong>Budget fit:</strong> ${currentRange.label} (${normalizedCategory}) | <strong>Estimated nightly range:</strong> ₹${currentRange.min.toLocaleString('en-IN')} - ₹${currentRange.max.toLocaleString('en-IN')}</p>
+<div style="display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0;">
+  <a href="${bookingComUrl}" target="_blank" rel="noopener noreferrer" style="display: inline-block; padding: 10px 14px; border: 1px solid #ddd; border-radius: 8px; text-decoration: none;">View on Booking.com</a>
+  <a href="${agodaUrl}" target="_blank" rel="noopener noreferrer" style="display: inline-block; padding: 10px 14px; border: 1px solid #ddd; border-radius: 8px; text-decoration: none;">View on Agoda</a>
+  <a href="${googleHotelsUrl}" target="_blank" rel="noopener noreferrer" style="display: inline-block; padding: 10px 14px; border: 1px solid #ddd; border-radius: 8px; text-decoration: none;">View on Google Hotels</a>
+</div>
+<p style="font-size: 13px; color: #666;">Prices and availability may change on partner websites.</p>
+`;
   }
 
   /**
