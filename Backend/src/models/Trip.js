@@ -259,6 +259,12 @@ const tripSchema = new mongoose.Schema({
     }],
     lastUpdated: Date
   },
+  bestTimeToVisit: {
+    months: String,
+    reason: String,
+    avoid: String,
+    tips: [String]
+  },
   recommendedAreas: [String], // Recommended areas/neighborhoods for 2-3 day trips
   tags: [String],
   createdAt: {

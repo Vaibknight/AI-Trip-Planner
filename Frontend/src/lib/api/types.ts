@@ -61,6 +61,7 @@ export interface TripData {
   recommendations?: any[];
   weather?: WeatherDetails;
   hotelBooking?: HotelBookingDetails;
+  bestTimeToVisit?: BestTimeToVisitDetails;
   recommendedAreas?: any;
   tags?: string[];
   createdAt?: string;
@@ -159,6 +160,13 @@ export interface HotelBookingDetails {
 export interface HotelBookingLink {
   label: string;
   url: string;
+}
+
+export interface BestTimeToVisitDetails {
+  months?: string;
+  reason?: string;
+  avoid?: string;
+  tips?: string[];
 }
 
 export interface DayItinerary {

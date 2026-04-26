@@ -128,6 +128,62 @@ export default function TripOutput({ preferences, plan }: TripOutputProps) {
 
   const hotelBookingData = plan.hotelBooking || hotelBookingFromHtml;
 
+  const bestTimeToVisitFromHtml = useMemo(() => {
+    if (!plan.itineraryHtml) return null;
+
+    try {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(plan.itineraryHtml, "text/html");
+      const sectionHeading = Array.from(doc.querySelectorAll("h1, h2, h3")).find((el) =>
+        /best time to visit/i.test(el.textContent || "")
+      );
+
+      if (!sectionHeading) return null;
+
+      const result: {
+        months?: string;
+        reason?: string;
+        avoid?: string;
+        tips?: string[];
+      } = { tips: [] };
+
+      let node = sectionHeading.nextElementSibling;
+      while (node && !/^H[1-2]$/i.test(node.tagName)) {
+        if (node.tagName === "P") {
+          const text = (node.textContent || "").trim();
+          const monthsMatch = text.match(/Ideal months:\s*(.+)$/i);
+          const reasonMatch = text.match(/Why:\s*(.+)$/i);
+          const avoidMatch = text.match(/Avoid if possible:\s*(.+)$/i);
+
+          if (monthsMatch) result.months = monthsMatch[1].trim();
+          if (reasonMatch) result.reason = reasonMatch[1].trim();
+          if (avoidMatch) result.avoid = avoidMatch[1].trim();
+        }
+
+        if (node.tagName === "UL") {
+          const tips = Array.from(node.querySelectorAll("li"))
+            .map((li) => (li.textContent || "").trim())
+            .filter(Boolean);
+          if (tips.length > 0) {
+            result.tips = [...(result.tips || []), ...tips];
+          }
+        }
+
+        node = node.nextElementSibling;
+      }
+
+      if (!result.months && !result.reason && !result.avoid && (!result.tips || result.tips.length === 0)) {
+        return null;
+      }
+
+      return result;
+    } catch {
+      return null;
+    }
+  }, [plan.itineraryHtml]);
+
+  const bestTimeToVisitData = plan.bestTimeToVisit || bestTimeToVisitFromHtml;
+
   return (
     <div className="space-y-6">
       {/* Trip Header */}
@@ -399,6 +455,44 @@ export default function TripOutput({ preferences, plan }: TripOutputProps) {
 
           {hotelBookingData.note && (
             <p className="text-xs text-gray-500 dark:text-gray-400">{hotelBookingData.note}</p>
+          )}
+        </div>
+      )}
+
+      {/* Best Time To Visit */}
+      {bestTimeToVisitData && (
+        <div className="bg-white dark:bg-gray-800 rounded-lg p-6 border border-gray-200 dark:border-gray-700">
+          <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-4">
+            🗓️ Best Time to Visit
+          </h3>
+
+          <div className="space-y-3 text-sm text-gray-700 dark:text-gray-300">
+            {bestTimeToVisitData.months && (
+              <p>
+                <strong>Ideal months:</strong> {bestTimeToVisitData.months}
+              </p>
+            )}
+            {bestTimeToVisitData.reason && (
+              <p>
+                <strong>Why:</strong> {bestTimeToVisitData.reason}
+              </p>
+            )}
+            {bestTimeToVisitData.avoid && (
+              <p>
+                <strong>Avoid if possible:</strong> {bestTimeToVisitData.avoid}
+              </p>
+            )}
+          </div>
+
+          {bestTimeToVisitData.tips && bestTimeToVisitData.tips.length > 0 && (
+            <div className="bg-amber-50 dark:bg-amber-900/20 rounded-lg p-4 mt-4 border border-amber-200 dark:border-amber-700">
+              <p className="font-semibold text-gray-900 dark:text-white mb-2">💡 Seasonal Tips</p>
+              <ul className="list-disc list-inside space-y-1 text-sm text-gray-700 dark:text-gray-300">
+                {bestTimeToVisitData.tips.map((tip, idx) => (
+                  <li key={idx}>{tip}</li>
+                ))}
+              </ul>
+            </div>
           )}
         </div>
       )}

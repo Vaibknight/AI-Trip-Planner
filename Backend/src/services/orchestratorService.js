@@ -318,6 +318,16 @@ class OrchestratorService {
       ? destinations.mainDestination.keyAreas.slice(0, 5) // Limit to top 5 areas
       : null;
 
+    // Build best-time-to-visit recommendation from seasonality + weather context
+    const bestTimeToVisit = this.getBestTimeToVisit({
+      destination: destinations.mainDestination?.name || destinations.mainDestination?.city || destinationCity,
+      country: destinations.mainDestination?.country || '',
+      weather,
+      travelStyle: intent.travelStyle
+    });
+
+    const bestTimeToVisitHtml = this.generateBestTimeToVisitHtml(bestTimeToVisit);
+
     // Generate budget-aware booking links HTML
     const bookingLinksHtml = this.generateBookingLinksHtml({
       destination: destinations.mainDestination?.name || destinations.mainDestination?.city || destinationCity,
@@ -379,12 +389,13 @@ class OrchestratorService {
       alternativeActivities: optimizations.alternativeActivities || [],
       recommendations: optimizations.finalRecommendations || [],
       weather,
+      bestTimeToVisit,
       // Recommended areas for 2-3 day trips
       recommendedAreas: recommendedAreas,
-      // HTML itinerary content (new format) - append booking links, transportation, and budget sections
+      // HTML itinerary content (new format) - append best-time, booking links, transportation, and budget sections
       itineraryHtml: enrichedItineraryHtml
-        ? [enrichedItineraryHtml, bookingLinksHtml, localTransportHtml, budgetHtml].filter(Boolean).join('\n\n')
-        : [bookingLinksHtml, localTransportHtml, budgetHtml].filter(Boolean).join('\n\n'),
+        ? [enrichedItineraryHtml, bestTimeToVisitHtml, bookingLinksHtml, localTransportHtml, budgetHtml].filter(Boolean).join('\n\n')
+        : [bestTimeToVisitHtml, bookingLinksHtml, localTransportHtml, budgetHtml].filter(Boolean).join('\n\n'),
       // Budget breakdown table HTML (also available separately)
       budgetHtml: budgetHtml,
       aiGenerated: true,
@@ -523,6 +534,93 @@ class OrchestratorService {
       });
       return html; // Return original HTML on error
     }
+  }
+
+  /**
+   * Suggest destination-specific best time to visit.
+   * Uses a simple seasonal fallback and enriches with current weather context when available.
+   */
+  getBestTimeToVisit({ destination, country, weather, travelStyle }) {
+    const destinationLower = (destination || '').toLowerCase();
+    const countryLower = (country || '').toLowerCase();
+    const style = travelStyle || 'general';
+
+    // Conservative defaults
+    let months = 'October to March';
+    let reason = 'Pleasant weather and better conditions for sightseeing.';
+    let avoid = 'June to September (heavy monsoon in many regions).';
+    const tips = [];
+
+    // India-focused overrides for common destinations
+    if (countryLower === 'india' || destinationLower.includes('goa')) {
+      if (destinationLower.includes('goa')) {
+        months = 'November to February';
+        reason = 'Comfortable beach weather, lower humidity, and strong nightlife season.';
+        avoid = 'June to September (monsoon with frequent heavy rain).';
+      } else if (destinationLower.includes('ladakh')) {
+        months = 'May to September';
+        reason = 'Roads and high-altitude passes are generally accessible.';
+        avoid = 'November to March (extreme winter conditions).';
+      } else if (destinationLower.includes('rajasthan')) {
+        months = 'October to March';
+        reason = 'Cooler desert temperatures make daytime exploration comfortable.';
+        avoid = 'April to June (peak summer heat).';
+      } else if (destinationLower.includes('kerala')) {
+        months = 'September to March';
+        reason = 'Balanced climate for backwaters, beaches, and hill stations.';
+        avoid = 'June to August (strong monsoon in many parts).';
+      }
+    }
+
+    if (style === 'relaxation') {
+      tips.push('Prefer shoulder season dates for better prices and less crowd.');
+    } else if (style === 'adventure') {
+      tips.push('Check local activity windows (trekking/watersports) before booking.');
+    } else {
+      tips.push('Book 4-8 weeks early for better accommodation options.');
+    }
+
+    if (weather?.current) {
+      const currentTemp = weather.current.temperatureC;
+      const currentCondition = weather.current.condition || 'current conditions';
+      if (typeof currentTemp === 'number') {
+        tips.push(`Current weather is around ${currentTemp.toFixed(1)}°C with ${currentCondition.toLowerCase()}.`);
+      } else {
+        tips.push(`Current weather indicates ${currentCondition.toLowerCase()}.`);
+      }
+    }
+
+    return {
+      months,
+      reason,
+      avoid,
+      tips
+    };
+  }
+
+  /**
+   * Generate HTML for best time to visit recommendation
+   */
+  generateBestTimeToVisitHtml(bestTimeToVisit) {
+    if (!bestTimeToVisit) {
+      return '';
+    }
+
+    let html = '\n<h2>🗓️ Best Time to Visit</h2>\n';
+    html += `<p><strong>Ideal months:</strong> ${bestTimeToVisit.months || 'N/A'}</p>\n`;
+    html += `<p><strong>Why:</strong> ${bestTimeToVisit.reason || 'N/A'}</p>\n`;
+    html += `<p><strong>Avoid if possible:</strong> ${bestTimeToVisit.avoid || 'N/A'}</p>\n`;
+
+    if (Array.isArray(bestTimeToVisit.tips) && bestTimeToVisit.tips.length > 0) {
+      html += '<h3>💡 Seasonal Tips</h3>\n';
+      html += '<ul style="margin: 10px 0; padding-left: 20px;">\n';
+      bestTimeToVisit.tips.forEach((tip) => {
+        html += `<li style="margin: 5px 0;">${tip}</li>\n`;
+      });
+      html += '</ul>\n';
+    }
+
+    return html;
   }
 
   /**
