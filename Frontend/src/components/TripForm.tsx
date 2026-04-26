@@ -11,6 +11,7 @@ import {
   DURATIONS,
   TRAVELERS,
   CURRENCIES,
+  LANGUAGES,
 } from "@/lib/constants";
 import { fetchCountries, fetchStates, getCountryCode } from "@/lib/api/country-state";
 import { getCurrencyForCountry, validateCurrency } from "@/lib/country-currency";
@@ -39,6 +40,7 @@ export default function TripForm({
       budgetRangeString: "",
       travelers: 2,
       currency: "USD",
+      preferredLanguage: "en",
       startDateTime: "",
       endDateTime: "",
     }
@@ -505,6 +507,16 @@ export default function TripForm({
           disabled={true}
           error={fieldErrors.currency}
           showError={isSubmitted}
+        />
+
+        <Dropdown
+          label="Select Language"
+          options={LANGUAGES}
+          value={preferences.preferredLanguage || "en"}
+          onChange={(value) =>
+            setPreferences({ ...preferences, preferredLanguage: value as string })
+          }
+          placeholder="Select language"
         />
 
         {/* Start Date and Time */}

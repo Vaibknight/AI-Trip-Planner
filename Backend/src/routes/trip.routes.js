@@ -10,6 +10,7 @@ const {
 } = require('../validators/tripValidator');
 const { planTripValidator } = require('../validators/planTripValidator');
 const { preferencesTripValidator } = require('../validators/preferencesTripValidator');
+const { preferredLanguageBody } = require('../middleware/preferredLanguageBody');
 
 // All trip routes require authentication
 router.use(authenticate);
@@ -18,7 +19,13 @@ router.use(authenticate);
 router.post('/plan-trip', planTripValidator, validate, tripController.planTrip);
 
 // Preferences-based trip planning endpoint (advanced flow: travel type, interests, season, etc.)
-router.post('/plan-trip-with-preferences', preferencesTripValidator, validate, tripController.planTripWithPreferences);
+router.post(
+  '/plan-trip-with-preferences',
+  preferredLanguageBody,
+  preferencesTripValidator,
+  validate,
+  tripController.planTripWithPreferences
+);
 
 // AI-powered trip generation (legacy endpoint)
 router.post('/generate', generateTripValidator, validate, tripController.generateTrip);

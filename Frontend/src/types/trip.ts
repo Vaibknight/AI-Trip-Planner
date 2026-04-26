@@ -9,6 +9,7 @@ export interface TripPreferences {
   budgetRangeString: string;
   travelers: number;
   currency: string;
+  preferredLanguage?: string;
   startDateTime?: string;
   endDateTime?: string;
   // Legacy fields for backward compatibility

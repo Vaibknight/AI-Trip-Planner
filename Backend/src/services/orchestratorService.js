@@ -8,6 +8,10 @@ const BudgetAgent = require('./agents/budgetAgent');
 const OptimizerAgent = require('./agents/optimizerAgent');
 const geocodingService = require('../utils/geocoding');
 const weatherService = require('./weatherService');
+const { getLocalizedPlanSummary } = require('../utils/planSummaryI18n');
+const { buildBestTimeToVisit } = require('../utils/bestTimeToVisitI18n');
+const { normalizePreferredLanguage, resolvePreferredLanguage } = require('../utils/preferredLanguage');
+const { getGeocodingPlaceContext } = require('../utils/geocodingContext');
 
 class OrchestratorService {
   constructor() {
@@ -247,6 +251,7 @@ class OrchestratorService {
     const startDate = new Date(tripData.startDate);
     const endDate = new Date(tripData.endDate);
     const duration = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24));
+    const preferredLanguage = resolvePreferredLanguage(tripData);
 
     // Format itinerary days with dates
     let formattedItinerary = [];
@@ -271,10 +276,12 @@ class OrchestratorService {
       formattedItinerary = this.createFallbackItinerary(tripData, intent, destinations, duration, startDate);
     }
 
-    // Enrich activities with coordinates using geocoding
+    // Nominatim: use trip API place names (Latin), not only AI-translated mainDestination labels
+    const geocodingContext = getGeocodingPlaceContext(tripData, destinations);
     const destinationCity = destinations.mainDestination?.city || destinations.mainDestination?.name || tripData.state || tripData.city;
     logger.info('Orchestrator: Starting geocoding for activities', {
-      destinationCity,
+      geocodingContext,
+      destinationDisplay: destinationCity,
       totalDays: formattedItinerary.length,
       totalActivities: formattedItinerary.reduce((sum, day) => sum + (day.activities?.length || 0), 0)
     });
@@ -285,7 +292,7 @@ class OrchestratorService {
         if (day.activities && Array.isArray(day.activities) && day.activities.length > 0) {
           day.activities = await geocodingService.enrichActivitiesWithCoordinates(
             day.activities,
-            destinationCity
+            geocodingContext
           );
         }
       }
@@ -323,10 +330,11 @@ class OrchestratorService {
       destination: destinations.mainDestination?.name || destinations.mainDestination?.city || destinationCity,
       country: destinations.mainDestination?.country || '',
       weather,
-      travelStyle: intent.travelStyle
+      travelStyle: intent.travelStyle,
+      language: preferredLanguage
     });
 
-    const bestTimeToVisitHtml = this.generateBestTimeToVisitHtml(bestTimeToVisit);
+    const bestTimeToVisitHtml = this.generateBestTimeToVisitHtml(bestTimeToVisit, preferredLanguage);
 
     // Generate budget-aware booking links HTML
     const bookingLinksHtml = this.generateBookingLinksHtml({
@@ -335,14 +343,15 @@ class OrchestratorService {
       endDate,
       travelers: tripData.travelers || 1,
       budget,
-      budgetCategory: intent.budgetCategory || tripData.budgetRange || 'moderate'
+      budgetCategory: intent.budgetCategory || tripData.budgetRange || 'moderate',
+      language: preferredLanguage
     });
 
     // Generate budget breakdown table HTML
-    const budgetHtml = this.generateBudgetTableHtml(budget, duration, tripData.travelers || 1);
+    const budgetHtml = this.generateBudgetTableHtml(budget, duration, tripData.travelers || 1, preferredLanguage);
     
     // Generate local transportation HTML
-    const localTransportHtml = this.generateLocalTransportHtml(destinations.transportation?.localTransportation);
+    const localTransportHtml = this.generateLocalTransportHtml(destinations.transportation?.localTransportation, preferredLanguage);
 
     // Enrich itinerary HTML with coordinates
     let enrichedItineraryHtml = itinerary.html || '';
@@ -350,13 +359,22 @@ class OrchestratorService {
       enrichedItineraryHtml = await this.enrichItineraryHtmlWithCoordinates(
         enrichedItineraryHtml,
         formattedItinerary,
-        destinationCity
+        geocodingContext
       );
     }
 
+    const summary = getLocalizedPlanSummary({
+      from: tripData.from || tripData.origin,
+      to: tripData.to || tripData.destination,
+      destinationName: destinations.mainDestination.name,
+      duration,
+      travelStyle: intent.travelStyle,
+      preferredLanguage
+    });
+
     return {
-      title: `${tripData.from || tripData.origin} → ${destinations.mainDestination.name}`,
-      description: `A ${duration}-day ${intent.travelStyle} trip to ${destinations.mainDestination.name}`,
+      title: summary.title,
+      description: summary.description,
       origin: tripData.from || tripData.origin,
       destination: destinations.mainDestination.name,
       destinations: formattedDestinations,
@@ -379,7 +397,8 @@ class OrchestratorService {
         budget: intent.budgetCategory,
         travelStyle: intent.travelStyle,
         interests: intent.priorityInterests,
-        purpose: intent.purpose
+        purpose: intent.purpose,
+        preferredLanguage
       },
       transportation: destinations.transportation,
       transportationTips: destinations.transportation?.localTransportation || null,
@@ -407,8 +426,9 @@ class OrchestratorService {
   /**
    * Enrich itinerary HTML with coordinates by geocoding activities directly from HTML
    * Adds data-lat and data-lon attributes to <li> tags
+   * @param {string|{ city: string, country: string, origin?: string }} geocodingContext - Map lookup context (API place names, Latin)
    */
-  async enrichItineraryHtmlWithCoordinates(html, formattedItinerary, city) {
+  async enrichItineraryHtmlWithCoordinates(html, formattedItinerary, geocodingContext) {
     if (!html) {
       return html;
     }
@@ -491,8 +511,8 @@ class OrchestratorService {
           const genericPatterns = /^(check-in|check-out|explore|visit|stroll|nightlife)$/i;
           if (locationName.length > 0 && !genericPatterns.test(locationName)) {
             try {
-              // Geocode the location
-              coordinates = await geocodingService.geocode(locationName, city);
+              // Geocode the location (use API place context for Nominatim, not display language)
+              coordinates = await geocodingService.geocode(locationName, geocodingContext);
               
               if (coordinates) {
                 // Cache it for potential future matches
@@ -540,79 +560,27 @@ class OrchestratorService {
    * Suggest destination-specific best time to visit.
    * Uses a simple seasonal fallback and enriches with current weather context when available.
    */
-  getBestTimeToVisit({ destination, country, weather, travelStyle }) {
-    const destinationLower = (destination || '').toLowerCase();
-    const countryLower = (country || '').toLowerCase();
-    const style = travelStyle || 'general';
-
-    // Conservative defaults
-    let months = 'October to March';
-    let reason = 'Pleasant weather and better conditions for sightseeing.';
-    let avoid = 'June to September (heavy monsoon in many regions).';
-    const tips = [];
-
-    // India-focused overrides for common destinations
-    if (countryLower === 'india' || destinationLower.includes('goa')) {
-      if (destinationLower.includes('goa')) {
-        months = 'November to February';
-        reason = 'Comfortable beach weather, lower humidity, and strong nightlife season.';
-        avoid = 'June to September (monsoon with frequent heavy rain).';
-      } else if (destinationLower.includes('ladakh')) {
-        months = 'May to September';
-        reason = 'Roads and high-altitude passes are generally accessible.';
-        avoid = 'November to March (extreme winter conditions).';
-      } else if (destinationLower.includes('rajasthan')) {
-        months = 'October to March';
-        reason = 'Cooler desert temperatures make daytime exploration comfortable.';
-        avoid = 'April to June (peak summer heat).';
-      } else if (destinationLower.includes('kerala')) {
-        months = 'September to March';
-        reason = 'Balanced climate for backwaters, beaches, and hill stations.';
-        avoid = 'June to August (strong monsoon in many parts).';
-      }
-    }
-
-    if (style === 'relaxation') {
-      tips.push('Prefer shoulder season dates for better prices and less crowd.');
-    } else if (style === 'adventure') {
-      tips.push('Check local activity windows (trekking/watersports) before booking.');
-    } else {
-      tips.push('Book 4-8 weeks early for better accommodation options.');
-    }
-
-    if (weather?.current) {
-      const currentTemp = weather.current.temperatureC;
-      const currentCondition = weather.current.condition || 'current conditions';
-      if (typeof currentTemp === 'number') {
-        tips.push(`Current weather is around ${currentTemp.toFixed(1)}°C with ${currentCondition.toLowerCase()}.`);
-      } else {
-        tips.push(`Current weather indicates ${currentCondition.toLowerCase()}.`);
-      }
-    }
-
-    return {
-      months,
-      reason,
-      avoid,
-      tips
-    };
+  getBestTimeToVisit({ destination, country, weather, travelStyle, language = 'en' }) {
+    return buildBestTimeToVisit({ destination, country, weather, travelStyle, language });
   }
 
   /**
    * Generate HTML for best time to visit recommendation
    */
-  generateBestTimeToVisitHtml(bestTimeToVisit) {
+  generateBestTimeToVisitHtml(bestTimeToVisit, language = 'en') {
     if (!bestTimeToVisit) {
       return '';
     }
 
-    let html = '\n<h2>🗓️ Best Time to Visit</h2>\n';
-    html += `<p><strong>Ideal months:</strong> ${bestTimeToVisit.months || 'N/A'}</p>\n`;
-    html += `<p><strong>Why:</strong> ${bestTimeToVisit.reason || 'N/A'}</p>\n`;
-    html += `<p><strong>Avoid if possible:</strong> ${bestTimeToVisit.avoid || 'N/A'}</p>\n`;
+    const t = this.getI18nLabels(language);
+
+    let html = `\n<h2>🗓️ ${t.bestTimeToVisitTitle}</h2>\n`;
+    html += `<p><strong>${t.idealMonthsLabel}</strong> ${bestTimeToVisit.months || 'N/A'}</p>\n`;
+    html += `<p><strong>${t.whyLabel}</strong> ${bestTimeToVisit.reason || 'N/A'}</p>\n`;
+    html += `<p><strong>${t.avoidIfPossibleLabel}</strong> ${bestTimeToVisit.avoid || 'N/A'}</p>\n`;
 
     if (Array.isArray(bestTimeToVisit.tips) && bestTimeToVisit.tips.length > 0) {
-      html += '<h3>💡 Seasonal Tips</h3>\n';
+      html += `<h3>💡 ${t.seasonalTipsTitle}</h3>\n`;
       html += '<ul style="margin: 10px 0; padding-left: 20px;">\n';
       bestTimeToVisit.tips.forEach((tip) => {
         html += `<li style="margin: 5px 0;">${tip}</li>\n`;
@@ -626,10 +594,11 @@ class OrchestratorService {
   /**
    * Generate budget-aware outbound booking links (no API integration required)
    */
-  generateBookingLinksHtml({ destination, startDate, endDate, travelers = 1, budget, budgetCategory = 'moderate' }) {
+  generateBookingLinksHtml({ destination, startDate, endDate, travelers = 1, budget, budgetCategory = 'moderate', language = 'en' }) {
     if (!destination || !startDate || !endDate) {
       return '';
     }
+    const t = this.getI18nLabels(language);
 
     const checkIn = new Date(startDate).toISOString().split('T')[0];
     const checkOut = new Date(endDate).toISOString().split('T')[0];
@@ -643,17 +612,14 @@ class OrchestratorService {
 
     const rangesByCategory = {
       budget: {
-        label: 'Save more',
         min: Math.max(500, Math.round(baseNightly * 0.6)),
         max: Math.max(1000, Math.round(baseNightly * 0.95))
       },
       moderate: {
-        label: 'Best for your budget',
         min: Math.max(1000, Math.round(baseNightly * 0.9)),
         max: Math.max(2000, Math.round(baseNightly * 1.25))
       },
       luxury: {
-        label: 'More comfort',
         min: Math.max(2500, Math.round(baseNightly * 1.4)),
         max: Math.max(4000, Math.round(baseNightly * 2.2))
       }
@@ -662,60 +628,73 @@ class OrchestratorService {
     const normalizedCategory = (budgetCategory || 'moderate').toLowerCase();
     const currentRange = rangesByCategory[normalizedCategory] || rangesByCategory.moderate;
 
+    const rangeLabel = {
+      budget: t.budgetOptionBudget,
+      moderate: t.budgetOptionModerate,
+      luxury: t.budgetOptionLuxury
+    }[normalizedCategory] || t.budgetOptionModerate;
+
+    const categoryLabel = {
+      budget: t.budgetCategoryNameBudget,
+      moderate: t.budgetCategoryNameModerate,
+      luxury: t.budgetCategoryNameLuxury
+    }[normalizedCategory] || normalizedCategory;
+
     const bookingComUrl = `https://www.booking.com/searchresults.html?ss=${encodedDestination}&checkin=${checkIn}&checkout=${checkOut}&group_adults=${adults}&no_rooms=${rooms}`;
     const agodaUrl = `https://www.agoda.com/search?city=${encodedDestination}&checkIn=${checkIn}&checkOut=${checkOut}&adults=${adults}&rooms=${rooms}`;
     const googleHotelsUrl = `https://www.google.com/travel/hotels/${encodedDestination}?q=hotels%20in%20${encodedDestination}%20from%20${checkIn}%20to%20${checkOut}`;
 
     return `
-<h2>🏨 Hotel Booking Suggestions</h2>
-<p><strong>Budget fit:</strong> ${currentRange.label} (${normalizedCategory}) | <strong>Estimated nightly range:</strong> ₹${currentRange.min.toLocaleString('en-IN')} - ₹${currentRange.max.toLocaleString('en-IN')}</p>
+<h2>🏨 ${t.hotelBookingSuggestionsTitle}</h2>
+<p><strong>${t.budgetFitLabel}</strong> ${rangeLabel} (${categoryLabel}) | <strong>${t.estimatedNightlyRangeLabel}</strong> ₹${currentRange.min.toLocaleString('en-IN')} - ₹${currentRange.max.toLocaleString('en-IN')}</p>
 <div style="display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0;">
-  <a href="${bookingComUrl}" target="_blank" rel="noopener noreferrer" style="display: inline-block; padding: 10px 14px; border: 1px solid #ddd; border-radius: 8px; text-decoration: none;">View on Booking.com</a>
-  <a href="${agodaUrl}" target="_blank" rel="noopener noreferrer" style="display: inline-block; padding: 10px 14px; border: 1px solid #ddd; border-radius: 8px; text-decoration: none;">View on Agoda</a>
-  <a href="${googleHotelsUrl}" target="_blank" rel="noopener noreferrer" style="display: inline-block; padding: 10px 14px; border: 1px solid #ddd; border-radius: 8px; text-decoration: none;">View on Google Hotels</a>
+  <a href="${bookingComUrl}" target="_blank" rel="noopener noreferrer" style="display: inline-block; padding: 10px 14px; border: 1px solid #ddd; border-radius: 8px; text-decoration: none;">${t.viewOnBooking}</a>
+  <a href="${agodaUrl}" target="_blank" rel="noopener noreferrer" style="display: inline-block; padding: 10px 14px; border: 1px solid #ddd; border-radius: 8px; text-decoration: none;">${t.viewOnAgoda}</a>
+  <a href="${googleHotelsUrl}" target="_blank" rel="noopener noreferrer" style="display: inline-block; padding: 10px 14px; border: 1px solid #ddd; border-radius: 8px; text-decoration: none;">${t.viewOnGoogleHotels}</a>
 </div>
-<p style="font-size: 13px; color: #666;">Prices and availability may change on partner websites.</p>
+<p style="font-size: 13px; color: #666;">${t.partnerPriceDisclaimer}</p>
 `;
   }
 
   /**
    * Generate HTML for local transportation tips
    */
-  generateLocalTransportHtml(localTransportation) {
+  generateLocalTransportHtml(localTransportation, language = 'en') {
     if (!localTransportation) {
       return '';
     }
+    const t = this.getI18nLabels(language);
 
-    let html = '\n<h2>🚇 Local Transportation Tips</h2>\n';
+    let html = `\n<h2>🚇 ${t.localTransportationTipsTitle}</h2>\n`;
     html += '<div style="margin: 20px 0;">\n';
 
     if (localTransportation.metro) {
-      html += '<h3>🚇 Metro/Subway</h3>\n';
+      html += `<h3>🚇 ${t.metroLabel}</h3>\n`;
       html += `<p>${localTransportation.metro}</p>\n`;
     }
 
     if (localTransportation.autoRickshaw) {
-      html += '<h3>🛺 Auto-Rickshaws</h3>\n';
+      html += `<h3>🛺 ${t.autoRickshawLabel}</h3>\n`;
       html += `<p>${localTransportation.autoRickshaw}</p>\n`;
     }
 
     if (localTransportation.eRickshaw) {
-      html += '<h3>🛵 E-Rickshaws</h3>\n';
+      html += `<h3>🛵 ${t.eRickshawLabel}</h3>\n`;
       html += `<p>${localTransportation.eRickshaw}</p>\n`;
     }
 
     if (localTransportation.buses) {
-      html += '<h3>🚌 Buses</h3>\n';
+      html += `<h3>🚌 ${t.busesLabel}</h3>\n`;
       html += `<p>${localTransportation.buses}</p>\n`;
     }
 
     if (localTransportation.other) {
-      html += '<h3>🚕 Other Transportation</h3>\n';
+      html += `<h3>🚕 ${t.otherTransportationLabel}</h3>\n`;
       html += `<p>${localTransportation.other}</p>\n`;
     }
 
     if (localTransportation.tips && Array.isArray(localTransportation.tips) && localTransportation.tips.length > 0) {
-      html += '<h3>💡 Transportation Tips</h3>\n';
+      html += `<h3>💡 ${t.transportationTipsLabel}</h3>\n`;
       html += '<ul style="margin: 10px 0; padding-left: 20px;">\n';
       localTransportation.tips.forEach(tip => {
         html += `<li style="margin: 5px 0;">${tip}</li>\n`;
@@ -730,9 +709,10 @@ class OrchestratorService {
   /**
    * Generate HTML table for budget breakdown
    */
-  generateBudgetTableHtml(budget, duration, travelers) {
+  generateBudgetTableHtml(budget, duration, travelers, language = 'en') {
     const currency = budget.currency || 'INR';
     const currencySymbol = this.getCurrencySymbol(currency);
+    const t = this.getI18nLabels(language);
     
     const formatAmount = (amount) => {
       return `${currencySymbol}${amount.toLocaleString('en-IN')}`;
@@ -756,50 +736,174 @@ class OrchestratorService {
     const miscellaneousPct = total > 0 ? ((miscellaneous / total) * 100).toFixed(1) : 0;
 
     return `
-<h2>💰 Budget Breakdown</h2>
+<h2>💰 ${t.budgetBreakdownTitle || 'Budget Breakdown'}</h2>
 <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
   <thead>
     <tr style="background-color: #f5f5f5;">
-      <th style="padding: 12px; text-align: left; border: 1px solid #ddd;">Category</th>
-      <th style="padding: 12px; text-align: right; border: 1px solid #ddd;">Amount</th>
-      <th style="padding: 12px; text-align: right; border: 1px solid #ddd;">Percentage</th>
+      <th style="padding: 12px; text-align: left; border: 1px solid #ddd;">${t.categoryLabel}</th>
+      <th style="padding: 12px; text-align: right; border: 1px solid #ddd;">${t.amountLabel}</th>
+      <th style="padding: 12px; text-align: right; border: 1px solid #ddd;">${t.percentageLabel}</th>
     </tr>
   </thead>
   <tbody>
     <tr>
-      <td style="padding: 10px; border: 1px solid #ddd;"><strong>🏨 Accommodation</strong></td>
+      <td style="padding: 10px; border: 1px solid #ddd;"><strong>🏨 ${t.accommodationLabel}</strong></td>
       <td style="padding: 10px; text-align: right; border: 1px solid #ddd;">${formatAmount(accommodation)}</td>
       <td style="padding: 10px; text-align: right; border: 1px solid #ddd;">${accommodationPct}%</td>
     </tr>
     <tr>
-      <td style="padding: 10px; border: 1px solid #ddd;"><strong>🚗 Transportation</strong></td>
+      <td style="padding: 10px; border: 1px solid #ddd;"><strong>🚗 ${t.transportationLabel}</strong></td>
       <td style="padding: 10px; text-align: right; border: 1px solid #ddd;">${formatAmount(transportation)}</td>
       <td style="padding: 10px; text-align: right; border: 1px solid #ddd;">${transportationPct}%</td>
     </tr>
     <tr>
-      <td style="padding: 10px; border: 1px solid #ddd;"><strong>🍽️ Food & Dining</strong></td>
+      <td style="padding: 10px; border: 1px solid #ddd;"><strong>🍽️ ${t.foodDiningLabel}</strong></td>
       <td style="padding: 10px; text-align: right; border: 1px solid #ddd;">${formatAmount(food)}</td>
       <td style="padding: 10px; text-align: right; border: 1px solid #ddd;">${foodPct}%</td>
     </tr>
     <tr>
-      <td style="padding: 10px; border: 1px solid #ddd;"><strong>🎯 Activities & Attractions</strong></td>
+      <td style="padding: 10px; border: 1px solid #ddd;"><strong>🎯 ${t.activitiesAttractionsLabel}</strong></td>
       <td style="padding: 10px; text-align: right; border: 1px solid #ddd;">${formatAmount(activities)}</td>
       <td style="padding: 10px; text-align: right; border: 1px solid #ddd;">${activitiesPct}%</td>
     </tr>
     <tr>
-      <td style="padding: 10px; border: 1px solid #ddd;"><strong>📦 Miscellaneous</strong></td>
+      <td style="padding: 10px; border: 1px solid #ddd;"><strong>📦 ${t.miscellaneousLabel}</strong></td>
       <td style="padding: 10px; text-align: right; border: 1px solid #ddd;">${formatAmount(miscellaneous)}</td>
       <td style="padding: 10px; text-align: right; border: 1px solid #ddd;">${miscellaneousPct}%</td>
     </tr>
     <tr style="background-color: #e8f5e9; font-weight: bold;">
-      <td style="padding: 12px; border: 1px solid #ddd;"><strong>Total</strong></td>
+      <td style="padding: 12px; border: 1px solid #ddd;"><strong>${t.totalLabel}</strong></td>
       <td style="padding: 12px; text-align: right; border: 1px solid #ddd;">${formatAmount(total)}</td>
       <td style="padding: 12px; text-align: right; border: 1px solid #ddd;">100%</td>
     </tr>
   </tbody>
 </table>
-<p><strong>Per Person:</strong> ${formatAmount(perPerson)} | <strong>Per Day:</strong> ${formatAmount(perDay)}</p>
+<p><strong>${t.perPersonLabel}</strong> ${formatAmount(perPerson)} | <strong>${t.perDayLabel}</strong> ${formatAmount(perDay)}</p>
 `;
+  }
+
+  getI18nLabels(language = 'en') {
+    const lang = normalizePreferredLanguage(language);
+    const labels = {
+      en: {
+        bestTimeToVisitTitle: 'Best Time to Visit',
+        idealMonthsLabel: 'Ideal months:',
+        whyLabel: 'Why:',
+        avoidIfPossibleLabel: 'Avoid if possible:',
+        seasonalTipsTitle: 'Seasonal Tips',
+        hotelBookingSuggestionsTitle: 'Hotel Booking Suggestions',
+        budgetFitLabel: 'Budget fit:',
+        estimatedNightlyRangeLabel: 'Estimated nightly range:',
+        viewOnBooking: 'View on Booking.com',
+        viewOnAgoda: 'View on Agoda',
+        viewOnGoogleHotels: 'View on Google Hotels',
+        partnerPriceDisclaimer: 'Prices and availability may change on partner websites.',
+        localTransportationTipsTitle: 'Local Transportation Tips',
+        metroLabel: 'Metro/Subway',
+        autoRickshawLabel: 'Auto-Rickshaws',
+        eRickshawLabel: 'E-Rickshaws',
+        busesLabel: 'Buses',
+        otherTransportationLabel: 'Other Transportation',
+        transportationTipsLabel: 'Transportation Tips',
+        categoryLabel: 'Category',
+        amountLabel: 'Amount',
+        percentageLabel: 'Percentage',
+        accommodationLabel: 'Accommodation',
+        transportationLabel: 'Transportation',
+        foodDiningLabel: 'Food & Dining',
+        activitiesAttractionsLabel: 'Activities & Attractions',
+        miscellaneousLabel: 'Miscellaneous',
+        totalLabel: 'Total',
+        perPersonLabel: 'Per Person:',
+        perDayLabel: 'Per Day:',
+        budgetBreakdownTitle: 'Budget Breakdown',
+        budgetOptionBudget: 'Save more',
+        budgetOptionModerate: 'Best for your budget',
+        budgetOptionLuxury: 'More comfort',
+        budgetCategoryNameBudget: 'budget',
+        budgetCategoryNameModerate: 'moderate',
+        budgetCategoryNameLuxury: 'luxury'
+      },
+      hi: {
+        bestTimeToVisitTitle: 'घूमने का सबसे अच्छा समय',
+        idealMonthsLabel: 'आदर्श महीने:',
+        whyLabel: 'क्यों:',
+        avoidIfPossibleLabel: 'यदि संभव हो तो बचें:',
+        seasonalTipsTitle: 'मौसमी सुझाव',
+        hotelBookingSuggestionsTitle: 'होटल बुकिंग सुझाव',
+        budgetFitLabel: 'बजट अनुकूल:',
+        estimatedNightlyRangeLabel: 'अनुमानित प्रति रात रेंज:',
+        viewOnBooking: 'Booking.com पर देखें',
+        viewOnAgoda: 'Agoda पर देखें',
+        viewOnGoogleHotels: 'Google Hotels पर देखें',
+        partnerPriceDisclaimer: 'पार्टनर वेबसाइट पर कीमतें और उपलब्धता बदल सकती हैं।',
+        localTransportationTipsTitle: 'स्थानीय परिवहन सुझाव',
+        metroLabel: 'मेट्रो/सबवे',
+        autoRickshawLabel: 'ऑटो-रिक्शा',
+        eRickshawLabel: 'ई-रिक्शा',
+        busesLabel: 'बसें',
+        otherTransportationLabel: 'अन्य परिवहन',
+        transportationTipsLabel: 'यातायात सुझाव',
+        categoryLabel: 'श्रेणी',
+        amountLabel: 'राशि',
+        percentageLabel: 'प्रतिशत',
+        accommodationLabel: 'आवास',
+        transportationLabel: 'परिवहन',
+        foodDiningLabel: 'भोजन और डाइनिंग',
+        activitiesAttractionsLabel: 'गतिविधियाँ और आकर्षण',
+        miscellaneousLabel: 'विविध',
+        totalLabel: 'कुल',
+        perPersonLabel: 'प्रति व्यक्ति:',
+        perDayLabel: 'प्रति दिन:',
+        budgetBreakdownTitle: 'बजट विवरण',
+        budgetOptionBudget: 'और बचत',
+        budgetOptionModerate: 'आपके बजट के लिए बेहतर',
+        budgetOptionLuxury: 'अधिक सुविधा',
+        budgetCategoryNameBudget: 'किफायती',
+        budgetCategoryNameModerate: 'मध्यम',
+        budgetCategoryNameLuxury: 'लक्ज़री'
+      },
+      de: {
+        bestTimeToVisitTitle: 'Beste Reisezeit',
+        idealMonthsLabel: 'Ideale Monate:',
+        whyLabel: 'Warum:',
+        avoidIfPossibleLabel: 'Wenn möglich meiden:',
+        seasonalTipsTitle: 'Saisonale Tipps',
+        hotelBookingSuggestionsTitle: 'Hoteltipps & Buchung',
+        budgetFitLabel: 'Passend zum Budget:',
+        estimatedNightlyRangeLabel: 'Geschätzter Nachtpreis (Spanne):',
+        viewOnBooking: 'Auf Booking.com ansehen',
+        viewOnAgoda: 'Auf Agoda ansehen',
+        viewOnGoogleHotels: 'Bei Google Hotels ansehen',
+        partnerPriceDisclaimer: 'Preise und Verfügbarkeit auf Partner-Websites können sich ändern.',
+        localTransportationTipsTitle: 'Tipps zum lokalen Nahverkehr',
+        metroLabel: 'U-Bahn/Metro',
+        autoRickshawLabel: 'Autorikschas',
+        eRickshawLabel: 'E-Rikschas',
+        busesLabel: 'Busse',
+        otherTransportationLabel: 'Sonstige Verkehrsmittel',
+        transportationTipsLabel: 'Verkehrstipps',
+        categoryLabel: 'Kategorie',
+        amountLabel: 'Betrag',
+        percentageLabel: 'Anteil',
+        accommodationLabel: 'Unterkunft',
+        transportationLabel: 'Transport',
+        foodDiningLabel: 'Essen & Trinken',
+        activitiesAttractionsLabel: 'Aktivitäten & Sehenswürdigkeiten',
+        miscellaneousLabel: 'Sonstiges',
+        totalLabel: 'Gesamt',
+        perPersonLabel: 'Pro Person:',
+        perDayLabel: 'Pro Tag:',
+        budgetBreakdownTitle: 'Budgetübersicht',
+        budgetOptionBudget: 'Günstigste Wahl',
+        budgetOptionModerate: 'Am besten zu Ihrem Budget',
+        budgetOptionLuxury: 'Mehr Komfort',
+        budgetCategoryNameBudget: 'günstig',
+        budgetCategoryNameModerate: 'mittel',
+        budgetCategoryNameLuxury: 'luxus'
+      }
+    };
+    return labels[lang] || labels.en;
   }
 
   /**

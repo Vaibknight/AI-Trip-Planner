@@ -195,7 +195,11 @@ const tripSchema = new mongoose.Schema({
     },
     interests: [String],
     dietaryRestrictions: [String],
-    accessibility: [String]
+    accessibility: [String],
+    preferredLanguage: {
+      type: String,
+      default: 'en'
+    }
   },
   status: {
     type: String,

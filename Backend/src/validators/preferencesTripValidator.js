@@ -99,6 +99,12 @@ const preferencesTripValidator = [
     .isString()
     .isLength({ min: 3, max: 3 })
     .withMessage('Currency must be a 3-letter code (e.g., USD, INR)'),
+
+  // Preferred language (optional)
+  body('preferredLanguage')
+    .optional()
+    .isIn(['en', 'mr', 'bn', 'ta', 'te', 'kn', 'ml', 'es', 'fr', 'de', 'it', 'pt', 'ja', 'zh', 'hi', 'ar', 'ru', 'ko'])
+    .withMessage('Preferred language must be one of the supported language codes'),
   
   // Start Date and Time (optional)
   body('startDateTime')

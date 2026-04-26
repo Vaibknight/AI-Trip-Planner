@@ -1,6 +1,7 @@
 const openRouterClient = require('../openRouterClient');
 const config = require('../../config/config');
 const logger = require('../../utils/logger');
+const { getTargetLanguageName, resolvePreferredLanguage } = require('../../utils/preferredLanguage');
 
 class BudgetAgent {
   constructor() {
@@ -17,6 +18,7 @@ class BudgetAgent {
       // Use tripData.budget as the target - this is the user's input budget
       const targetBudget = tripData.budget || 30000;
       const currency = tripData.currency || 'INR';
+      const targetLanguage = getTargetLanguageName(resolvePreferredLanguage(tripData));
       
       logger.info('Budget Agent: Starting budget estimation', {
         targetBudget,
@@ -35,6 +37,8 @@ class BudgetAgent {
       Destination: ${destinations.mainDestination.name}
       Transportation: ${destinations.transportation.recommended}
       Activities: ${itinerary.itinerary?.length || 0} days of activities
+      
+      CRITICAL LANGUAGE: In the JSON output, write every "suggestion" value (and any other free-text value shown to a traveler) in ${targetLanguage}. Use English only for JSON property names and enum-like category values the API expects (e.g. "accommodation", "food").
       
       CRITICAL REQUIREMENT: The total budget MUST be equal to or less than ${targetBudget} ${currency}. 
       Distribute the budget across categories proportionally while staying within this limit.
@@ -77,7 +81,7 @@ class BudgetAgent {
         messages: [
           {
             role: 'system',
-            content: 'You are an expert travel budget planner. Provide accurate cost estimates and practical budget optimization suggestions.\n\nYou are NOT allowed to use internal chain-of-thought reasoning. You must answer concisely and directly. Do not think step by step. Only output the final answer.'
+            content: `You are an expert travel budget planner. Provide accurate cost estimates and practical budget optimization suggestions. User-facing text must be in ${targetLanguage} as requested in the task.\n\nYou are NOT allowed to use internal chain-of-thought reasoning. You must answer concisely and directly. Do not think step by step. Only output the final answer.`
           },
           {
             role: 'user',

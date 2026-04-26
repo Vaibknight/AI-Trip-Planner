@@ -1,6 +1,7 @@
 const tripService = require('../services/tripService');
 const orchestratorService = require('../services/orchestratorService');
 const logger = require('../utils/logger');
+const { resolvePreferredLanguage } = require('../utils/preferredLanguage');
 
 /**
  * Calculate trip start and end dates based on arrival time
@@ -186,6 +187,7 @@ const planTripWithPreferencesSSE = async (req, res, next) => {
       destination,
       state, // State/city destination
       origin,
+      country,
       travelType = 'leisure',
       interests = [],
       season,
@@ -195,11 +197,20 @@ const planTripWithPreferencesSSE = async (req, res, next) => {
       budgetRangeString,
       travelers = 1,
       currency = 'USD',
+      preferredLanguage: bodyPreferredLanguage,
+      language: bodyLanguage,
+      locale: bodyLocale,
       startDateTime, // New: arrival date and time
       endDateTime,   // New: departure date and time
       startDate,
       endDate
     } = req.body;
+
+    const preferredLanguage = resolvePreferredLanguage({
+      preferredLanguage: bodyPreferredLanguage,
+      language: bodyLanguage,
+      locale: bodyLocale
+    });
     
     // Log destination payload
     logger.info('📍 SSE Destination payload received', {
@@ -345,6 +356,7 @@ const planTripWithPreferencesSSE = async (req, res, next) => {
       destination: finalDestination,
       state: state, // Pass state separately for reference
       city: state, // Also set city for backward compatibility with agents
+      country,
       startDate: calculatedStartDate,
       endDate: calculatedEndDate,
       startDateTime: startDateTime ? new Date(startDateTime) : null, // Arrival date and time
@@ -359,6 +371,7 @@ const planTripWithPreferencesSSE = async (req, res, next) => {
       duration: parseInt(duration),
       budgetRange: budgetRange || (budgetAmount < 20000 ? 'budget' : budgetAmount < 50000 ? 'moderate' : budgetAmount < 100000 ? 'moderate' : 'luxury'),
       budgetRangeString,
+      preferredLanguage,
       preferencesBased: true
     };
     
@@ -457,13 +470,23 @@ const planTripWithPreferencesSync = async (req, res, next) => {
       budgetRangeString,
       origin,
       state, // State/city destination
+      country,
       startDate,
       endDate,
       startDateTime, // New: arrival date and time
       endDateTime,   // New: departure date and time
       travelers = 1,
-      currency = 'INR'
+      currency = 'INR',
+      preferredLanguage: bodyPreferredLanguage,
+      language: bodyLanguage,
+      locale: bodyLocale
     } = req.body;
+
+    const preferredLanguage = resolvePreferredLanguage({
+      preferredLanguage: bodyPreferredLanguage,
+      language: bodyLanguage,
+      locale: bodyLocale
+    });
     
     // Log destination payload
     logger.info('📍 Destination payload received', {
@@ -654,6 +677,7 @@ const planTripWithPreferencesSync = async (req, res, next) => {
       destination: finalDestination,
       state: state, // Pass state separately for reference
       city: state, // Also set city for backward compatibility with agents
+      country,
       startDate: calculatedStartDate,
       endDate: calculatedEndDate,
       startDateTime: startDateTime ? new Date(startDateTime) : null, // Arrival date and time
@@ -668,6 +692,7 @@ const planTripWithPreferencesSync = async (req, res, next) => {
       duration: parseInt(duration),
       budgetRange,
       budgetRangeString,
+      preferredLanguage,
       preferencesBased: true // Flag to indicate this is preferences-based
     };
 

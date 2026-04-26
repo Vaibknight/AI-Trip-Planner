@@ -1,6 +1,7 @@
 const openRouterClient = require('../openRouterClient');
 const config = require('../../config/config');
 const logger = require('../../utils/logger');
+const { getTargetLanguageName, resolvePreferredLanguage } = require('../../utils/preferredLanguage');
 
 class ItineraryAgent {
   constructor() {
@@ -25,6 +26,8 @@ class ItineraryAgent {
       const travelType = tripData.travelType || 'leisure';
       const budgetRange = tripData.budgetRange || intent.budgetCategory || 'moderate';
       const budgetRangeString = tripData.budgetRangeString || '';
+      const preferredLanguage = resolvePreferredLanguage(tripData);
+      const targetLanguage = getTargetLanguageName(preferredLanguage);
       
       // HTML format prompt - avoids JSON parsing issues
       const origin = tripData.origin || tripData.from || 'Origin';
@@ -45,6 +48,7 @@ class ItineraryAgent {
       const prompt = `Create a ${intent.estimatedDays}-day ${budgetLabel} ${season} tour of ${destination}.
 
 CRITICAL: The destination is ${destination}. You MUST create an itinerary for ${destination} specifically. Do NOT use a different city or destination. Use "${destination}" exactly as provided.
+CRITICAL LANGUAGE REQUIREMENT: Write all user-facing itinerary text in ${targetLanguage}.
 
 Origin: ${origin}
 Destination: ${destination}
@@ -84,6 +88,7 @@ CRITICAL REQUIREMENTS:
 - Times: Breakfast 8-9, Lunch 12-13, Dinner 19-20:30, Coffee 10-11 & 15-16
 - 5-7 activities per day with specific timing
 - Match ${budgetRange} budget
+- All labels, headings, and activity text must be in ${targetLanguage}
 - Output ONLY valid HTML with proper tags - no JSON, no markdown, no \\n characters, no code blocks
 - Use proper HTML structure: <h1>, <h2>, <table>, <ul>, <li> tags
 - Each activity must be on a separate <li> tag`;
@@ -99,7 +104,7 @@ CRITICAL REQUIREMENTS:
             messages: [
               {
                 role: 'system',
-                content: 'Output HTML itinerary only. Use real place names. No JSON, no markdown code blocks, no explanations.\n\nYou are NOT allowed to use internal chain-of-thought reasoning. You must answer concisely and directly. Do not think step by step. Only output the final answer.'
+                content: `Output HTML itinerary only in ${targetLanguage} for all traveler-visible text. Use real place names. No JSON, no markdown code blocks, no explanations.\n\nYou are NOT allowed to use internal chain-of-thought reasoning. You must answer concisely and directly. Do not think step by step. Only output the final answer.`
               },
               {
                 role: 'user',
@@ -134,7 +139,7 @@ CRITICAL REQUIREMENTS:
             messages: [
               {
                 role: 'system',
-                content: 'Output HTML itinerary only. Use real place names. No JSON, no markdown code blocks, no explanations.\n\nYou are NOT allowed to use internal chain-of-thought reasoning. You must answer concisely and directly. Do not think step by step. Only output the final answer.'
+                content: `Output HTML itinerary only in ${targetLanguage} for all traveler-visible text. Use real place names. No JSON, no markdown code blocks, no explanations.\n\nYou are NOT allowed to use internal chain-of-thought reasoning. You must answer concisely and directly. Do not think step by step. Only output the final answer.`
               },
               {
                 role: 'user',
@@ -155,7 +160,7 @@ CRITICAL REQUIREMENTS:
             messages: [
               {
                 role: 'system',
-                content: 'Output HTML itinerary only. Use real place names. No JSON, no markdown code blocks, no explanations.\n\nYou are NOT allowed to use internal chain-of-thought reasoning. You must answer concisely and directly. Do not think step by step. Only output the final answer.'
+                content: `Output HTML itinerary only in ${targetLanguage} for all traveler-visible text. Use real place names. No JSON, no markdown code blocks, no explanations.\n\nYou are NOT allowed to use internal chain-of-thought reasoning. You must answer concisely and directly. Do not think step by step. Only output the final answer.`
               },
               {
                 role: 'user',
