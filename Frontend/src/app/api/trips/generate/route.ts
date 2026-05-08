@@ -28,6 +28,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const destination = preferences.destination;
+
     // TODO: Replace this with actual API call to your backend/AI service
     // Example: Call OpenAI, Anthropic, or your custom AI service
     
@@ -36,38 +38,45 @@ export async function POST(request: NextRequest) {
       id: `trip-${Date.now()}`,
       preferences,
       itinerary: {
-        summary: `A ${preferences.duration}-day ${preferences.travelType} trip to ${preferences.destination} during ${preferences.season}. Perfect for ${preferences.travelers} ${preferences.travelers === 1 ? "person" : "people"} interested in ${preferences.interests.join(", ")}.`,
-        days: Array.from({ length: preferences.duration }, (_, i) => ({
-          day: i + 1,
-          activities: [
-            {
-              name: `Activity ${i + 1}`,
-              description: `Explore ${preferences.destination}`,
-              duration: "2-3 hours",
-              location: preferences.destination,
-              time: "09:00",
-              type: preferences.interests[0] || "sightseeing",
-            },
-          ],
-          meals: [
-            {
-              type: "breakfast" as const,
-              name: "Local Breakfast",
-              location: preferences.destination,
-              cuisine: "local",
-            },
-            {
-              type: "lunch" as const,
-              name: "Restaurant Lunch",
-              location: preferences.destination,
-            },
-            {
-              type: "dinner" as const,
-              name: "Dinner Experience",
-              location: preferences.destination,
-            },
-          ],
-        })),
+        summary: `A ${preferences.duration}-day ${preferences.travelType} trip to ${destination} during ${preferences.season}. Perfect for ${preferences.travelers} ${preferences.travelers === 1 ? "person" : "people"} interested in ${preferences.interests.join(", ")}.`,
+        days: Array.from({ length: preferences.duration }, (_, i) => {
+          const dayNum = i + 1;
+          return {
+            date: new Date(Date.now() + i * 86400000).toISOString(),
+            day: dayNum,
+            title: `Day ${dayNum}`,
+            activities: [
+              {
+                name: `Activity ${dayNum}`,
+                description: `Explore ${destination}`,
+                duration: 120,
+                location: destination,
+                time: "09:00",
+                startTime: "09:00",
+                endTime: "11:00",
+                type: preferences.interests[0] || "sightseeing",
+              },
+            ],
+            meals: [
+              {
+                type: "breakfast" as const,
+                name: "Local Breakfast",
+                location: destination,
+                cuisine: "local",
+              },
+              {
+                type: "lunch" as const,
+                name: "Restaurant Lunch",
+                location: destination,
+              },
+              {
+                type: "dinner" as const,
+                name: "Dinner Experience",
+                location: destination,
+              },
+            ],
+          };
+        }),
         estimatedCost: {
           currency: preferences.currency,
           min: preferences.duration * 100 * preferences.travelers,

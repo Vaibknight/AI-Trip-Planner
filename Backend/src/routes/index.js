@@ -4,6 +4,7 @@ const router = express.Router();
 // Import route modules
 const authRoutes = require('./auth.routes');
 const tripRoutes = require('./trip.routes');
+const mapsRoutes = require('./maps.routes');
 
 // API information endpoint
 router.get('/', (req, res) => {
@@ -37,6 +38,10 @@ router.get('/', (req, res) => {
         addActivity: 'POST /api/trips/:id/days/:dayIndex/activities - Add activity',
         updateActivity: 'PUT /api/trips/:id/days/:dayIndex/activities/:activityIndex - Update activity',
         deleteActivity: 'DELETE /api/trips/:id/days/:dayIndex/activities/:activityIndex - Delete activity'
+      },
+      maps: {
+        geocode: 'GET /api/maps/geocode?place=NAME — Resolve coordinates (Auth Required)',
+        geocodeBatch: 'POST /api/maps/geocode/batch — Batch geocode { places, city?, country? } (Auth Required)'
       },
       utility: {
         apiInfo: 'GET /api - This endpoint',
@@ -79,6 +84,7 @@ router.get('/', (req, res) => {
 
 // Mount route modules
 router.use('/auth', authRoutes);
+router.use('/maps', mapsRoutes);
 router.use('/trips', tripRoutes);
 
 module.exports = router;

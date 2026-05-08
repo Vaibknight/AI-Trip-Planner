@@ -83,6 +83,7 @@ Generate HTML itinerary in this EXACT format with proper HTML tags:
 Continue for all ${intent.estimatedDays} days.
 
 CRITICAL REQUIREMENTS:
+- Do NOT include latitude, longitude, GPS coordinates, or data-lat/data-lon attributes in the HTML output.
 - Use REAL place/restaurant/cafe names (e.g., "Red Fort", "Karim's Restaurant", "Indian Coffee House")
 - Include cafes between activities
 - Times: Breakfast 8-9, Lunch 12-13, Dinner 19-20:30, Coffee 10-11 & 15-16

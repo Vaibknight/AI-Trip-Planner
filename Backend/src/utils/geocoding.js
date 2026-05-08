@@ -1,9 +1,18 @@
 const logger = require('./logger');
+const pLimit = require('p-limit');
 const { isLikelyGeocodableScript } = require('./geocodingContext');
+
+const NOMINATIM_HTTP_TIMEOUT_MS = parseInt(process.env.NOMINATIM_HTTP_TIMEOUT_MS || '10000', 10);
+const NOMINATIM_MAX_ATTEMPTS = parseInt(process.env.NOMINATIM_MAX_ATTEMPTS || '3', 10);
+/** Parallel geocode tasks (each still respects shared Nominatim rate limit); default 5 */
+const GEOCODE_BATCH_CONCURRENCY = Math.min(
+  10,
+  Math.max(1, parseInt(process.env.GEOCODE_BATCH_CONCURRENCY || '5', 10) || 5)
+);
 
 /**
  * Geocoding service using OpenStreetMap Nominatim API
- * Free geocoding service - requires max 1 request per second
+ * Free geocoding service - requires max 1 request per second to nominatim.openstreetmap.org
  * Map / coordinate lookup uses place context in Latin (trip API fields), not only translated display text.
  */
 class GeocodingService {
@@ -11,7 +20,7 @@ class GeocodingService {
     this.baseUrl = 'https://nominatim.openstreetmap.org/search';
     this.requestQueue = [];
     this.lastRequestTime = 0;
-    this.minRequestInterval = 1000; // 1 second between requests (Nominatim requirement)
+    this.minRequestInterval = 1000; // 1 second between Nominatim HTTP calls (shared across workers)
     this.cache = new Map(); // Simple in-memory cache to avoid duplicate requests
   }
 
@@ -81,34 +90,216 @@ class GeocodingService {
    * @param {string} query
    * @returns {Promise<object|null>} first result
    */
+  async _loadFromMongo(cacheKey) {
+    try {
+      const GeocodeCache = require('../models/GeocodeCache');
+      const doc = await GeocodeCache.findOne({ key: cacheKey }).lean();
+      if (doc && typeof doc.latitude === 'number' && typeof doc.longitude === 'number') {
+        return { latitude: doc.latitude, longitude: doc.longitude };
+      }
+    } catch (err) {
+      logger.debug('Geocoding: MongoDB cache read skipped', { error: err.message });
+    }
+    return null;
+  }
+
+  /**
+   * @param {string} cacheKey
+   * @param {string} placeSnippet
+   * @param {string|object|null} placeContext
+   * @param {{ latitude: number, longitude: number }} coordinates
+   */
+  async _saveToMongo(cacheKey, placeSnippet, placeContext, coordinates) {
+    try {
+      const GeocodeCache = require('../models/GeocodeCache');
+      const ctx = this._normalizePlaceContext(placeContext);
+      await GeocodeCache.findOneAndUpdate(
+        { key: cacheKey },
+        {
+          key: cacheKey,
+          place: placeSnippet || '',
+          contextCity: ctx.city || '',
+          contextCountry: ctx.country || '',
+          latitude: coordinates.latitude,
+          longitude: coordinates.longitude
+        },
+        { upsert: true }
+      );
+    } catch (err) {
+      logger.warn('Geocoding: MongoDB cache write failed', { error: err.message });
+    }
+  }
+
+  /**
+   * HTTP GET to Nominatim with shared rate limit, per-request timeout, and retries on transient failures.
+   */
   async _nominatimSearch(query) {
     if (!query || !query.trim()) {
       return null;
     }
-    await this.waitForRateLimit();
-    const url = new URL(this.baseUrl);
-    url.searchParams.set('q', query);
-    url.searchParams.set('format', 'json');
-    url.searchParams.set('limit', '1');
-    url.searchParams.set('addressdetails', '0');
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
-    const response = await fetch(url.toString(), {
-      method: 'GET',
-      headers: {
-        'User-Agent': 'AI-Trip-Planner/1.0' // Required by Nominatim
-      },
-      signal: controller.signal
-    });
-    clearTimeout(timeoutId);
-    if (!response.ok) {
-      throw new Error(`Nominatim API error: ${response.status} ${response.statusText}`);
+    const urlString = (() => {
+      const url = new URL(this.baseUrl);
+      url.searchParams.set('q', query);
+      url.searchParams.set('format', 'json');
+      url.searchParams.set('limit', '1');
+      url.searchParams.set('addressdetails', '0');
+      return url.toString();
+    })();
+
+    let lastError;
+    for (let attempt = 1; attempt <= NOMINATIM_MAX_ATTEMPTS; attempt++) {
+      const httpStart = Date.now();
+      try {
+        await this.waitForRateLimit();
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), NOMINATIM_HTTP_TIMEOUT_MS);
+        const response = await fetch(urlString, {
+          method: 'GET',
+          headers: {
+            'User-Agent': 'AI-Trip-Planner/1.0'
+          },
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        const httpMs = Date.now() - httpStart;
+        if (!response.ok) {
+          const retryable = response.status === 429 || response.status >= 500;
+          logger.warn('Geocoding: Nominatim HTTP error', {
+            status: response.status,
+            attempt,
+            httpMs,
+            retryable
+          });
+          if (retryable && attempt < NOMINATIM_MAX_ATTEMPTS) {
+            await new Promise((r) => setTimeout(r, 400 * attempt));
+            continue;
+          }
+          throw new Error(`Nominatim API error: ${response.status} ${response.statusText}`);
+        }
+        const data = await response.json();
+        logger.debug('Geocoding: Nominatim OK', { attempt, httpMs, hasResults: !!(data && data.length) });
+        if (data && data.length > 0) {
+          return data[0];
+        }
+        return null;
+      } catch (error) {
+        lastError = error;
+        const transient =
+          error.name === 'AbortError' ||
+          /fetch|network|ECONNRESET|ETIMEDOUT/i.test(error.message || '');
+        logger.warn('Geocoding: Nominatim attempt failed', {
+          attempt,
+          message: error.message,
+          transient,
+          httpMs: Date.now() - httpStart
+        });
+        if (attempt < NOMINATIM_MAX_ATTEMPTS && transient) {
+          await new Promise((r) => setTimeout(r, 500 * attempt));
+          continue;
+        }
+        throw error;
+      }
     }
-    const data = await response.json();
-    if (data && data.length > 0) {
-      return data[0];
-    }
+    if (lastError) throw lastError;
     return null;
+  }
+
+  /**
+   * Primary cache key for a place string + context (matches geocode runOnce primary path).
+   */
+  _primaryCacheKey(placeTrimmed, placeContext) {
+    const ctx = this._normalizePlaceContext(placeContext);
+    const ctxKey = `ctx:${ctx.city || ''}|${ctx.country || ''}`.toLowerCase();
+    return `${placeTrimmed}|${ctxKey}`.toLowerCase();
+  }
+
+  /**
+   * Bulk-load MongoDB cache entries into the in-memory map before parallel geocode.
+   */
+  async _prefetchMongoByKeys(cacheKeys) {
+    if (!cacheKeys || cacheKeys.length === 0) return { found: 0 };
+    const uniqueKeys = [...new Set(cacheKeys)];
+    try {
+      const GeocodeCache = require('../models/GeocodeCache');
+      const docs = await GeocodeCache.find({ key: { $in: uniqueKeys } })
+        .select('key latitude longitude')
+        .lean()
+        .maxTimeMS(8000);
+      let found = 0;
+      for (const doc of docs) {
+        if (doc && typeof doc.latitude === 'number' && typeof doc.longitude === 'number') {
+          this.cache.set(doc.key, { latitude: doc.latitude, longitude: doc.longitude });
+          found++;
+        }
+      }
+      logger.info('Geocoding: Mongo prefetch', {
+        requestedKeys: uniqueKeys.length,
+        docsFound: found
+      });
+      return { found };
+    } catch (err) {
+      logger.warn('Geocoding: Mongo prefetch failed', { error: err.message });
+      return { found: 0 };
+    }
+  }
+
+  /**
+   * Parallel batch geocode with p-limit, deduped keys, Mongo prefetch, Promise.all workers.
+   * Nominatim calls remain globally rate-limited (1/s) via waitForRateLimit inside _nominatimSearch.
+   *
+   * @param {string[]} places
+   * @param {object|null} placeContext
+   * @returns {Promise<{ results: Array<{ place: string, coordinates: object|null }>, meta: object }>}
+   */
+  async geocodeBatchParallel(places, placeContext = null) {
+    const tBatch = Date.now();
+    const raw = Array.isArray(places) ? places : [];
+    const unique = [...new Set(raw.map((p) => String(p).trim()).filter((p) => p.length > 0))];
+
+    if (unique.length === 0) {
+      return {
+        results: [],
+        meta: {
+          durationMs: 0,
+          uniqueCount: 0,
+          concurrency: GEOCODE_BATCH_CONCURRENCY,
+          mongoPrefetchHits: 0,
+          nominatimApprox: 'see logs'
+        }
+      };
+    }
+
+    const prefetchKeys = unique.map((p) => this._primaryCacheKey(p, placeContext));
+    const prefetch = await this._prefetchMongoByKeys(prefetchKeys);
+
+    const limit = pLimit(GEOCODE_BATCH_CONCURRENCY);
+    const tasks = unique.map((place) =>
+      limit(() => this.geocode(place, placeContext))
+    );
+    const coordsList = await Promise.all(tasks);
+
+    const results = unique.map((place, i) => ({
+      place,
+      coordinates: coordsList[i] || null
+    }));
+
+    const durationMs = Date.now() - tBatch;
+    logger.info('Geocoding: batch parallel complete', {
+      durationMs,
+      uniqueCount: unique.length,
+      concurrency: GEOCODE_BATCH_CONCURRENCY,
+      mongoPrefetchDocs: prefetch.found
+    });
+
+    return {
+      results,
+      meta: {
+        durationMs,
+        uniqueCount: unique.length,
+        concurrency: GEOCODE_BATCH_CONCURRENCY,
+        mongoPrefetchHits: prefetch.found
+      }
+    };
   }
 
   /**
@@ -135,6 +326,12 @@ class GeocodingService {
         logger.debug('Geocoding: Using cached result', { locationName, placeContext, fullQuery, logLabel });
         return this.cache.get(cacheKey);
       }
+      const mongoCoords = await this._loadFromMongo(cacheKey);
+      if (mongoCoords) {
+        this.cache.set(cacheKey, mongoCoords);
+        logger.debug('Geocoding: MongoDB cache hit', { locationName, cacheKey, logLabel });
+        return mongoCoords;
+      }
       try {
         const result = await this._nominatimSearch(fullQuery);
         if (result) {
@@ -143,6 +340,7 @@ class GeocodingService {
             longitude: parseFloat(result.lon)
           };
           this.cache.set(cacheKey, coordinates);
+          await this._saveToMongo(cacheKey, qBody.trim(), placeContext, coordinates);
           logger.debug('Geocoding: Success', {
             locationName,
             placeContext,

@@ -92,6 +92,11 @@ const server = app.listen(PORT, () => {
   logger.info(`🌐 API available at http://localhost:${PORT}/api`);
 });
 
+// Batch geocoding can exceed 60s (Nominatim ~1 req/s × many places). Node defaults
+// headersTimeout to 60s and would close the response early without this.
+server.headersTimeout = 190_000;
+server.requestTimeout = 190_000;
+
 // Handle unhandled promise rejections
 process.on('unhandledRejection', (err) => {
   logger.error('UNHANDLED REJECTION! Shutting down...', err);
