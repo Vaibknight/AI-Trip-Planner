@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { MapPin, GeocodeUiStatus } from "@/hooks/useTripGeocoding";
 
+/** Abort stale async Leaflet sync when pins update again (e.g. second geocode wave). */
+
 interface TripMapCDNProps {
   pins: MapPin[];
   status: GeocodeUiStatus;
@@ -26,6 +28,9 @@ export default function TripMapCDN({
   const [leafletReady, setLeafletReady] = useState(false);
   const mapInstanceRef = useRef<any>(null);
   const markersRef = useRef<Map<string, any>>(new Map());
+  const pinsRef = useRef<MapPin[]>(pins);
+  pinsRef.current = pins;
+  const syncGenerationRef = useRef(0);
 
   useEffect(() => {
     const onFocus = (ev: Event) => {
@@ -58,7 +63,7 @@ export default function TripMapCDN({
 
     if (!mapRef.current) return;
 
-    console.time("tripMap:leafletUpdate");
+    const generation = ++syncGenerationRef.current;
 
     const syncMarkers = async () => {
       try {
@@ -85,12 +90,18 @@ export default function TripMapCDN({
           });
         }
 
+        if (generation !== syncGenerationRef.current) return;
+
         const L = (window as any).L;
         if (!L || !mapRef.current) {
           throw new Error("Leaflet not available");
         }
 
-        const pinKeys = new Set(pins.map((p) => p.key));
+        /** Always use latest pins so a stale async pass cannot drop markers from a newer wave */
+        const pinsNow = pinsRef.current;
+        const pinKeys = new Set(pinsNow.map((p) => p.key));
+
+        if (generation !== syncGenerationRef.current) return;
 
         for (const [key, marker] of markersRef.current) {
           if (!pinKeys.has(key)) {
@@ -103,9 +114,11 @@ export default function TripMapCDN({
 
         if (!map) {
           const avgLat =
-            pins.reduce((s, p) => s + p.lat, 0) / Math.max(pins.length, 1);
+            pinsNow.reduce((s, p) => s + p.lat, 0) /
+            Math.max(pinsNow.length, 1);
           const avgLng =
-            pins.reduce((s, p) => s + p.lng, 0) / Math.max(pins.length, 1);
+            pinsNow.reduce((s, p) => s + p.lng, 0) /
+            Math.max(pinsNow.length, 1);
 
           map = L.map(mapRef.current, {
             center: [avgLat, avgLng],
@@ -121,7 +134,9 @@ export default function TripMapCDN({
           mapInstanceRef.current = map;
         }
 
-        for (const loc of pins) {
+        if (generation !== syncGenerationRef.current) return;
+
+        for (const loc of pinsNow) {
           if (markersRef.current.has(loc.key)) continue;
 
           const marker = L.marker([loc.lat, loc.lng]).addTo(map);
@@ -135,16 +150,18 @@ export default function TripMapCDN({
           markersRef.current.set(loc.key, marker);
         }
 
+        if (generation !== syncGenerationRef.current) return;
+
         const bounds = L.latLngBounds([]);
-        pins.forEach((loc) => bounds.extend([loc.lat, loc.lng]));
-        if (pins.length > 0 && map) {
+        pinsNow.forEach((loc) => bounds.extend([loc.lat, loc.lng]));
+        if (pinsNow.length > 0 && map) {
           map.fitBounds(bounds, { padding: [50, 50] });
         }
 
+        if (generation !== syncGenerationRef.current) return;
+
         setLeafletReady(true);
-        console.timeEnd("tripMap:leafletUpdate");
       } catch (e) {
-        console.timeEnd("tripMap:leafletUpdate");
         console.error("Trip map error:", e);
       }
     };

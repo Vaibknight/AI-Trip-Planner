@@ -87,6 +87,94 @@ class GeocodingService {
   }
 
   /**
+   * Strip itinerary-style prefixes / pick venue after commas so Nominatim sees POI names, not full sentences.
+   * @param {string} s
+   * @returns {string}
+   */
+  _stripLeadingActivityPrefixes(s) {
+    if (!s) return '';
+    const patterns = [
+      /^return\s+to\s+/i,
+      /^travel\s+to\s+/i,
+      /^day\s+trip\s+to\s+/i,
+      /^trip\s+to\s+/i,
+      /^visit\s+to\s+/i,
+      /^visit\s+/i,
+      /^check-in\s+at\s+/i,
+      /^check-out\s+(from\s+)?/i,
+      /^(breakfast|brunch|lunch|dinner|supper|coffee|tea|snacks?)\s+at\s+/i,
+      /^(breakfast|brunch|lunch|dinner)\s+on\s+(the\s+)?/i,
+      /^(explore|tour|stroll)\s+(through\s+|of\s+|to\s+)?/i
+    ];
+    let t = String(s).trim();
+    for (let round = 0; round < 6; round++) {
+      const before = t;
+      for (const re of patterns) {
+        t = t.replace(re, '').trim();
+      }
+      if (t === before) break;
+    }
+    return t;
+  }
+
+  /**
+   * Skip comma-tail segments like "evening free" when a better segment exists earlier.
+   * @param {string} seg
+   * @returns {boolean}
+   */
+  _isVagueGeocodeSegment(seg) {
+    const t = (seg || '').trim().toLowerCase();
+    if (t.length < 2) return true;
+    if (/^(evening|morning|afternoon|night)\b/.test(t) && /\b(free|leisure|rest)\b/.test(t)) return true;
+    if (/^free\s+time$/i.test(t)) return true;
+    if (/^relax/i.test(t)) return true;
+    return false;
+  }
+
+  /**
+   * Normalize free-text itinerary lines for geocoding (used before cache key + Nominatim).
+   * @param {string} text
+   * @returns {string}
+   */
+  sanitizePlaceForGeocode(text) {
+    if (!text || typeof text !== 'string') return '';
+    let s = String(text).trim().replace(/\s+/g, ' ');
+    if (!s) return '';
+
+    const flight = s.match(/^flight\s+from\s+.+\s+to\s+(.+)$/i);
+    if (flight && flight[1] && flight[1].trim().length >= 2) {
+      return flight[1].trim();
+    }
+
+    if (s.includes(',')) {
+      const parts = s.split(',').map((p) => p.trim()).filter(Boolean);
+      for (let i = parts.length - 1; i >= 0; i--) {
+        let seg = this._stripLeadingActivityPrefixes(parts[i]);
+        if (this._isVagueGeocodeSegment(seg)) continue;
+        if (seg.length >= 2 && !/^(return|travel)\s+to\s+/i.test(seg)) {
+          return seg;
+        }
+      }
+      return this._stripLeadingActivityPrefixes(parts[parts.length - 1] || s).trim();
+    }
+
+    return this._stripLeadingActivityPrefixes(s).trim();
+  }
+
+  /**
+   * Body string used for primary Mongo prefetch (matches first successful runOnce lookup).
+   * @param {string} trimmed
+   * @returns {string}
+   */
+  _primaryLookupBody(trimmed) {
+    const sanitized = this.sanitizePlaceForGeocode(trimmed);
+    if (sanitized && sanitized.length >= 2 && sanitized.toLowerCase() !== trimmed.toLowerCase()) {
+      return sanitized;
+    }
+    return trimmed;
+  }
+
+  /**
    * @param {string} query
    * @returns {Promise<object|null>} first result
    */
@@ -269,7 +357,9 @@ class GeocodingService {
       };
     }
 
-    const prefetchKeys = unique.map((p) => this._primaryCacheKey(p, placeContext));
+    const prefetchKeys = unique.map((p) =>
+      this._primaryCacheKey(this._primaryLookupBody(p), placeContext)
+    );
     const prefetch = await this._prefetchMongoByKeys(prefetchKeys);
 
     const limit = pLimit(GEOCODE_BATCH_CONCURRENCY);
@@ -364,9 +454,21 @@ class GeocodingService {
       }
     };
 
-    // 1) primary: as provided (translated/verbose text + Latin city/country context from trip)
+    // 1) sanitized itinerary text (POI / city names), then 2) as provided
     const trimmed = locationName.trim();
-    let coords = await runOnce(trimmed, 'primary');
+    const sanitized = this.sanitizePlaceForGeocode(trimmed);
+    let coords = null;
+    if (
+      sanitized &&
+      sanitized.length >= 2 &&
+      sanitized.toLowerCase() !== trimmed.toLowerCase()
+    ) {
+      coords = await runOnce(sanitized, 'sanitized');
+      if (coords) {
+        return coords;
+      }
+    }
+    coords = await runOnce(trimmed, 'primary');
     if (coords) {
       return coords;
     }

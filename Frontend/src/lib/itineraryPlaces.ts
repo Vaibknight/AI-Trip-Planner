@@ -5,12 +5,63 @@ export function normalizePlaceKey(query: string): string {
   return query.trim().toLowerCase();
 }
 
+/** Align with Backend sanitizePlaceForGeocode — send POI/city names to batch geocode, not full sentences */
+function stripLeadingActivityPrefixes(s: string): string {
+  const patterns = [
+    /^return\s+to\s+/i,
+    /^travel\s+to\s+/i,
+    /^day\s+trip\s+to\s+/i,
+    /^trip\s+to\s+/i,
+    /^visit\s+to\s+/i,
+    /^visit\s+/i,
+    /^check-in\s+at\s+/i,
+    /^check-out\s+(from\s+)?/i,
+    /^(breakfast|brunch|lunch|dinner|supper|coffee|tea|snacks?)\s+at\s+/i,
+    /^(breakfast|brunch|lunch|dinner)\s+on\s+(the\s+)?/i,
+    /^(explore|tour|stroll)\s+(through\s+|of\s+|to\s+)?/i,
+  ];
+  let t = s.trim();
+  for (let round = 0; round < 6; round++) {
+    const before = t;
+    for (const re of patterns) {
+      t = t.replace(re, "").trim();
+    }
+    if (t === before) break;
+  }
+  return t;
+}
+
+function isVagueSegment(seg: string): boolean {
+  const t = seg.trim().toLowerCase();
+  if (t.length < 2) return true;
+  if (/^(evening|morning|afternoon|night)\b/.test(t) && /\b(free|leisure|rest)\b/.test(t)) return true;
+  if (/^free\s+time$/i.test(t)) return true;
+  if (/^relax/i.test(t)) return true;
+  return false;
+}
+
 export function cleanActivityQuery(raw: string): string {
-  const t = raw.trim();
-  return (
-    t.replace(/^(visit to|visit|breakfast at|lunch at|dinner at|coffee at|explore|tour of|stroll through)\s+/i, "").trim() ||
-    t
-  );
+  let s = raw.trim().replace(/\s+/g, " ");
+  if (!s) return "";
+
+  const flight = s.match(/^flight\s+from\s+.+\s+to\s+(.+)$/i);
+  if (flight?.[1] && flight[1].trim().length >= 2) {
+    return flight[1].trim();
+  }
+
+  if (s.includes(",")) {
+    const parts = s.split(",").map((p) => p.trim()).filter(Boolean);
+    for (let i = parts.length - 1; i >= 0; i--) {
+      const seg = stripLeadingActivityPrefixes(parts[i]!);
+      if (isVagueSegment(seg)) continue;
+      if (seg.length >= 2 && !/^(return|travel)\s+to\s+/i.test(seg)) {
+        return seg;
+      }
+    }
+    return stripLeadingActivityPrefixes(parts[parts.length - 1] || s).trim();
+  }
+
+  return stripLeadingActivityPrefixes(s).trim() || s;
 }
 
 export interface ExtractedPlace {
