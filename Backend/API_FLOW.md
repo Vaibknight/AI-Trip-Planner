@@ -9,7 +9,7 @@ This document describes the API flow matching the UI requirements for the AI Tri
 2. **Enters destination and dates** → Frontend collects input
 3. **Clicks "Generate"** → `POST /api/trips/plan-trip`
 4. **AI agents collaborate** → Backend orchestrates agents
-5. **User sees itinerary + budget + map** → Frontend displays results
+5. **User sees itinerary + budget (and optional map on demand)** → Frontend displays the plan immediately; the map is loaded only when the user clicks **Show map** (see [Response time and geocoding](#response-time-and-geocoding))
 6. **User tweaks (budget, days, interests)** → `PUT /api/trips/:id/tweak`
 7. **AI updates plan** → Backend re-plans with updates
 
@@ -19,9 +19,31 @@ This document describes the API flow matching the UI requirements for the AI Tri
 3. **Clicks "Generate Travel Plan"** → `POST /api/trips/plan-trip-with-preferences`
 4. **AI suggests destinations** (if not provided) → Backend uses destination agent
 5. **AI agents collaborate** → Backend orchestrates all agents
-6. **User sees suggested destination + itinerary + budget** → Frontend displays results
+6. **User sees suggested destination + itinerary + budget** → Frontend displays results (map on demand via **Show map**)
 7. **User tweaks preferences** → `PUT /api/trips/:id/tweak`
 8. **AI updates plan** → Backend re-plans with updates
+
+## Response time and geocoding
+
+### Why the trip flow used to feel like ~1 minute 30 seconds
+
+A large part of the wait was **geocoding**: turning free-text place names from the itinerary into latitude/longitude using **OpenStreetMap Nominatim**. That service is meant to be used politely—typically about **one HTTP request per second** per client. When the app resolved **many stops one after another**, those seconds added up quickly (dozens of places could mean **well over a minute** of network wait) **on top of** the AI orchestration time. The user experience was “everything finishes together,” so the **full itinerary + full map coordinates** appeared only after that long tail completed.
+
+### How we reduced the perceived wait to on the order of ~30 seconds
+
+| Change | Effect |
+|--------|--------|
+| **Removed geocoding from the initial trip response path** | The backend returns structured itinerary + HTML + budget when the **AI agents** finish. Coordinate lookup no longer blocks that response. |
+| **“Show map” button (on-demand geocoding)** | The frontend renders the trip **immediately**. Coordinates load only after the user chooses to open the map, via **`POST /api/maps/geocode/batch`**. Users who only read the plan are not delayed by Nominatim. |
+| **Faster batch geocoding when the map is opened** | Duplicate place names are resolved once; **MongoDB cache** hits avoid repeat external calls; **controlled parallelism** (`p-limit`, capped concurrency) replaces purely sequential awaits while still respecting Nominatim rate limits; timeouts and retries handle flaky responses. |
+| **Progressive map (two waves)** | **Landmarks and day anchors** geocode first so pins appear sooner; meals and lower-priority stops can load in a **second background wave**. |
+
+Together, moving geocoding off the critical path accounts for most of the improvement from roughly **~1m 30s** “until something useful is on screen” down to roughly **~30s** for the **core trip payload** (exact numbers vary with model latency and itinerary size). Map loading time is **explicit and optional**, not bundled into the first response.
+
+### Mental model
+
+1. **Generate** → AI-only path → user reads itinerary right away.  
+2. **Show map** → batch geocoding + cache + parallel workers → pins appear progressively.
 
 ## System Flow
 
