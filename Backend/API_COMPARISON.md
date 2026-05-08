@@ -41,15 +41,16 @@ This document helps you choose between the two trip planning APIs based on your 
 
 ---
 
-### 2. Preferences-Based API: AI Suggests Everything
+### 2. Preferences-Based API: Preferences + optional destination
 **Endpoint:** `POST /api/trips/plan-trip-with-preferences`
 
 **Use this when:**
-- ✅ User doesn't know where to go
-- ✅ User wants AI to suggest destinations
+- ✅ User doesn't know where to go **or** wants to combine preferences with an optional city
 - ✅ User prefers to select by season rather than specific dates
 - ✅ User wants to plan based on travel style and interests
 - ✅ Building an advanced trip planner with preferences UI
+
+**Destination suggestion (default hybrid orchestrator):** If no destination is supplied, the backend selects a city from the **`DestinationCatalog`** collection (MongoDB) using tags and season when possible, otherwise a configured fallback — **no separate “destination suggestion” LLM call** unless **`USE_LEGACY_AI_ORCHESTRATOR=true`**.
 
 **Required Fields:**
 - `duration` - Number of days (1-30)
@@ -145,7 +146,7 @@ Both APIs return the **same response structure**:
 ### Use Preferences API (`/plan-trip-with-preferences`) when:
 - User fills out: "I want a leisure trip in winter for 7 days, interested in history and food"
 - Building an AI-powered trip discovery tool
-- User needs destination suggestions
+- User needs a **suggested city** when none is chosen (default: **`DestinationCatalog`** + fallback; legacy mode can use full destination LLM)
 - Advanced preferences-based planning
 - Matching the UI shown in your screenshots
 

@@ -10,6 +10,11 @@ const weatherService = require('./weatherService');
 const { getLocalizedPlanSummary } = require('../utils/planSummaryI18n');
 const { buildBestTimeToVisit } = require('../utils/bestTimeToVisitI18n');
 const { normalizePreferredLanguage, resolvePreferredLanguage } = require('../utils/preferredLanguage');
+const { deriveIntentFromTripData } = require('../utils/intentDeriver');
+const { calculateBudgetFromTripData } = require('./budgetCalculator');
+const destinationDataService = require('./destinationDataService');
+const tripPlanCacheService = require('./tripPlanCacheService');
+
 class OrchestratorService {
   constructor() {
     if (!config.openRouterApiKey) {
@@ -30,18 +35,209 @@ class OrchestratorService {
   }
 
   /**
-   * Orchestrate the complete trip planning process
-   * @param {Object} tripData - User trip input
-   * @param {Function} progressCallback - Callback to report progress
-   * @returns {Promise<Object>} Complete trip plan
+   * Orchestrate the complete trip planning process.
+   * Default: hybrid Mongo destination data + derived intent + formula budget + parallel (itinerary AI ∥ weather).
+   * Set USE_LEGACY_AI_ORCHESTRATOR=true for sequential Intent → Destination AI → Budget AI (slower).
    */
-  async planTrip(tripData, progressCallback = null) {
+  async planTrip(tripData, progressCallback = null, options = {}) {
+    if (!this.client) {
+      throw new Error('OpenRouter API key not configured');
+    }
+
+    if (process.env.USE_LEGACY_AI_ORCHESTRATOR === 'true') {
+      return this._planTripLegacySequential(tripData, progressCallback);
+    }
+
+    try {
+      const skipCache = !!options.skipCache;
+      const cacheKey = tripPlanCacheService.buildKey(tripData);
+      if (!skipCache) {
+        const cached = tripPlanCacheService.get(cacheKey);
+        if (cached) {
+          logger.info('Orchestrator: returning cached trip plan');
+          if (progressCallback) {
+            ['understanding', 'destinations', 'itinerary', 'budget'].forEach((step) => {
+              progressCallback({ step, status: 'completed', message: 'Loaded from cache' });
+            });
+          }
+          return cached;
+        }
+      }
+
+      if (progressCallback) {
+        progressCallback({
+          step: 'understanding',
+          status: 'in_progress',
+          message: 'Understanding your preferences'
+        });
+      }
+      const intent = deriveIntentFromTripData(tripData);
+      if (progressCallback) {
+        progressCallback({
+          step: 'understanding',
+          status: 'completed',
+          message: 'Understanding your preferences'
+        });
+      }
+
+      if (!tripData.state && (tripData.to || tripData.destination)) {
+        tripData.state = tripData.to || tripData.destination;
+      }
+
+      if (tripData.state) {
+        tripData.to = tripData.state;
+        tripData.destination = tripData.state;
+        tripData.city = tripData.state;
+      } else {
+        logger.warn('planTrip - No state — using synthetic destination bundle');
+      }
+
+      if (progressCallback) {
+        progressCallback({
+          step: 'destinations',
+          status: 'in_progress',
+          message: 'Loading destination insights'
+        });
+      }
+      const destinations = await destinationDataService.resolveDestinations(tripData, intent);
+      logger.info('planTrip - destination bundle ready', {
+        source: destinations.source,
+        city: destinations.mainDestination?.city
+      });
+      if (progressCallback) {
+        progressCallback({
+          step: 'destinations',
+          status: 'completed',
+          message: 'Destination ready'
+        });
+      }
+
+      const weatherCity =
+        destinations.mainDestination?.city ||
+        destinations.mainDestination?.name ||
+        tripData.state ||
+        tripData.city;
+      const weatherCountry = destinations.mainDestination?.country || tripData.country || '';
+
+      const weatherPayload = {
+        city: weatherCity,
+        country: weatherCountry
+      };
+      if (destinations.catalogCoords) {
+        weatherPayload.latitude = destinations.catalogCoords.latitude;
+        weatherPayload.longitude = destinations.catalogCoords.longitude;
+      }
+
+      if (progressCallback) {
+        progressCallback({
+          step: 'itinerary',
+          status: 'in_progress',
+          message: 'Creating itinerary'
+        });
+      }
+
+      const tokenCb =
+        options.onItineraryToken && typeof options.onItineraryToken === 'function'
+          ? options.onItineraryToken
+          : null;
+
+      const itineraryPromise = this.itineraryAgent
+        .createItinerary(tripData, intent, destinations, tokenCb, { compact: true })
+        .catch((itineraryError) => {
+          logger.error('Orchestrator: Failed to create itinerary — fallback itinerary', {
+            error: itineraryError.message
+          });
+          return { itinerary: [], highlights: [], tips: [] };
+        });
+
+      const weatherPromise = weatherService.getDestinationWeather(weatherPayload).catch((wErr) => {
+        logger.warn('Orchestrator: weather fetch failed', { error: wErr.message });
+        return null;
+      });
+
+      let itinerary;
+      let weather;
+      [itinerary, weather] = await Promise.all([itineraryPromise, weatherPromise]);
+
+      if (
+        itinerary &&
+        itinerary.itinerary &&
+        Array.isArray(itinerary.itinerary) &&
+        itinerary.itinerary.length > 0
+      ) {
+        logger.info('Orchestrator: Itinerary created successfully', {
+          days: itinerary.itinerary.length,
+          totalActivities: itinerary.itinerary.reduce(
+            (sum, day) => sum + (day.activities?.length || 0),
+            0
+          )
+        });
+      } else {
+        itinerary = { itinerary: [], highlights: [], tips: [] };
+      }
+
+      if (progressCallback) {
+        progressCallback({
+          step: 'itinerary',
+          status: 'completed',
+          message: 'Creating itinerary'
+        });
+      }
+
+      if (progressCallback) {
+        progressCallback({
+          step: 'budget',
+          status: 'in_progress',
+          message: 'Estimating budget'
+        });
+      }
+      const budget = calculateBudgetFromTripData(tripData, intent, destinations, itinerary);
+      if (progressCallback) {
+        progressCallback({
+          step: 'budget',
+          status: 'completed',
+          message: 'Estimating budget'
+        });
+      }
+
+      const optimizations = {
+        optimizations: [],
+        alternativeActivities: [],
+        routeOptimization: { suggested: false, changes: [] },
+        finalRecommendations: []
+      };
+
+      const tripPlan = await this.compileTripPlan(
+        tripData,
+        intent,
+        destinations,
+        itinerary,
+        budget,
+        optimizations,
+        weather
+      );
+
+      if (!skipCache) {
+        tripPlanCacheService.set(cacheKey, tripPlan);
+      }
+
+      logger.info('Orchestrator: Trip plan completed', { tripId: tripPlan.id });
+      return tripPlan;
+    } catch (error) {
+      logger.error('Orchestrator Error:', error);
+      throw new Error(`Trip planning failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * Legacy sequential orchestration (4+ LLM-class calls + serial weather).
+   */
+  async _planTripLegacySequential(tripData, progressCallback = null) {
     if (!this.client) {
       throw new Error('OpenRouter API key not configured');
     }
 
     try {
-      // Step 1: Understanding preferences
       if (progressCallback) {
         progressCallback({
           step: 'understanding',
@@ -50,7 +246,7 @@ class OrchestratorService {
         });
       }
       const intent = await this.intentAgent.analyzeIntent(tripData);
-      
+
       if (progressCallback) {
         progressCallback({
           step: 'understanding',
@@ -59,7 +255,6 @@ class OrchestratorService {
         });
       }
 
-      // Step 2: Finding best destinations
       if (progressCallback) {
         progressCallback({
           step: 'destinations',
@@ -67,18 +262,14 @@ class OrchestratorService {
           message: 'Finding best destinations'
         });
       }
-      // CRITICAL: Ensure state is preserved before calling findDestinations
-      // ONLY use state - do not use city/to/destination as fallbacks
       if (tripData.state) {
-        // Set other fields from state for backward compatibility, but state is the source of truth
         tripData.to = tripData.state;
         tripData.destination = tripData.state;
-        tripData.city = tripData.state; // Set city for backward compatibility only
+        tripData.city = tripData.state;
       } else {
         logger.warn('planTrip - No state provided - destination agent will search generically');
       }
-      
-      // Log tripData before calling findDestinations
+
       logger.info('planTrip - Before findDestinations', {
         state: tripData.state || 'UNDEFINED - ONLY THIS WILL BE USED',
         city: tripData.city || 'UNDEFINED (IGNORED)',
@@ -86,10 +277,9 @@ class OrchestratorService {
         destination: tripData.destination || 'UNDEFINED (IGNORED)',
         note: 'Destination agent will ONLY use state field'
       });
-      
+
       const destinations = await this.destinationAgent.findDestinations(tripData, intent);
-      
-      // Log destinations response
+
       logger.info('planTrip - After findDestinations', {
         mainDestinationCity: destinations.mainDestination?.city,
         mainDestinationName: destinations.mainDestination?.name,
@@ -97,7 +287,7 @@ class OrchestratorService {
         tripDataCity: tripData.city,
         tripDataTo: tripData.to
       });
-      
+
       if (progressCallback) {
         progressCallback({
           step: 'destinations',
@@ -106,7 +296,6 @@ class OrchestratorService {
         });
       }
 
-      // Step 3: Creating itinerary
       if (progressCallback) {
         progressCallback({
           step: 'itinerary',
@@ -114,12 +303,11 @@ class OrchestratorService {
           message: 'Creating itinerary'
         });
       }
-      
+
       let itinerary;
       try {
         itinerary = await this.itineraryAgent.createItinerary(tripData, intent, destinations);
-        
-        // Validate we got a proper itinerary
+
         if (!itinerary || !itinerary.itinerary || !Array.isArray(itinerary.itinerary) || itinerary.itinerary.length === 0) {
           logger.error('Orchestrator: Itinerary agent returned empty/invalid itinerary', {
             itinerary: itinerary,
@@ -127,7 +315,7 @@ class OrchestratorService {
           });
           throw new Error('Itinerary agent returned empty or invalid response');
         }
-        
+
         logger.info('Orchestrator: Itinerary created successfully', {
           days: itinerary.itinerary.length,
           totalActivities: itinerary.itinerary.reduce((sum, day) => sum + (day.activities?.length || 0), 0)
@@ -142,10 +330,9 @@ class OrchestratorService {
           willUseFallback: true,
           NOTE: 'Check logs above for detailed error from Itinerary Agent'
         });
-        // Set itinerary to empty so fallback will be used
         itinerary = { itinerary: [], highlights: [], tips: [] };
       }
-      
+
       if (progressCallback) {
         progressCallback({
           step: 'itinerary',
@@ -154,7 +341,6 @@ class OrchestratorService {
         });
       }
 
-      // Step 4: Estimating budget
       if (progressCallback) {
         progressCallback({
           step: 'budget',
@@ -163,7 +349,7 @@ class OrchestratorService {
         });
       }
       const budget = await this.budgetAgent.estimateBudget(tripData, intent, destinations, itinerary);
-      
+
       if (progressCallback) {
         progressCallback({
           step: 'budget',
@@ -172,50 +358,18 @@ class OrchestratorService {
         });
       }
 
-      // Step 5: Optimizing plan (SKIPPED for speed - optional step)
-      // Skipping optimizer to reduce response time - can be enabled if needed
       const optimizations = {
         optimizations: [],
         alternativeActivities: [],
         routeOptimization: { suggested: false, changes: [] },
         finalRecommendations: []
       };
-      
-      // Uncomment below to enable optimizer (adds ~5-10 seconds)
-      /*
-      if (progressCallback) {
-        progressCallback({
-          step: 'optimizing',
-          status: 'in_progress',
-          message: 'Optimizing plan'
-        });
-      }
-      
-      try {
-        optimizations = await this.optimizerAgent.optimizePlan(tripData, intent, destinations, itinerary, budget);
-        logger.info('Orchestrator: Optimization completed successfully');
-      } catch (optimizerError) {
-        logger.warn('Orchestrator: Optimization step failed, continuing without optimizations', {
-          error: optimizerError.message
-        });
-      }
-      
-      if (progressCallback) {
-        progressCallback({
-          step: 'optimizing',
-          status: 'completed',
-          message: 'Optimizing plan'
-        });
-      }
-      */
 
-      // Fetch destination weather (non-blocking for core flow on failures)
       const weather = await weatherService.getDestinationWeather({
         city: destinations.mainDestination?.city || destinations.mainDestination?.name || tripData.state || tripData.city,
         country: destinations.mainDestination?.country || ''
       });
 
-      // Compile final trip plan (coordinates resolved separately via /api/maps/*)
       const tripPlan = await this.compileTripPlan(
         tripData,
         intent,
@@ -848,7 +1002,7 @@ class OrchestratorService {
    * @param {Object} tripData - Trip data
    * @param {Function} progressCallback - Optional callback for progress updates
    */
-  async planTripWithPreferences(tripData, progressCallback = null) {
+  async planTripWithPreferences(tripData, progressCallback = null, options = {}) {
     if (!this.client) {
       throw new Error('OpenRouter API key not configured');
     }
@@ -866,11 +1020,10 @@ class OrchestratorService {
         hasDestination: !!tripData.destination
       });
 
-      // CRITICAL: ONLY check state - no fallbacks to city/to/destination
       const hasDestination = !!tripData.state;
-      
+
       if (!hasDestination) {
-        logger.info('No destination provided, suggesting based on preferences');
+        logger.info('No destination provided — suggesting from catalog / fallback');
         if (progressCallback) {
           progressCallback({
             step: 'suggesting',
@@ -879,28 +1032,16 @@ class OrchestratorService {
           });
         }
 
-        // Use destination agent to suggest destinations based on preferences
-        const intent = {
-          travelStyle: tripData.travelStyle || 'cultural',
-          priorityInterests: tripData.interests || [],
-          budgetCategory: tripData.budgetRange || 'moderate',
-          estimatedDays: tripData.duration || 5
-        };
-
-        const suggestedDestinations = await this.destinationAgent.findDestinations(
-          { 
-            from: tripData.origin || 'Anywhere',
-            to: tripData.state || 'Any destination',
-            season: tripData.season,
-            duration: tripData.duration
-          },
-          intent
+        const intentPreview = deriveIntentFromTripData(tripData);
+        const suggestedCity = await destinationDataService.suggestDestinationCityFromCatalog(
+          tripData,
+          intentPreview
         );
 
-        // Use the suggested destination
-        tripData.to = suggestedDestinations.mainDestination.city || suggestedDestinations.mainDestination.name;
-        tripData.destination = tripData.to;
-        tripData.city = tripData.to; // Also set city for consistency
+        tripData.state = suggestedCity;
+        tripData.to = suggestedCity;
+        tripData.destination = suggestedCity;
+        tripData.city = suggestedCity;
 
         if (progressCallback) {
           progressCallback({
@@ -910,12 +1051,10 @@ class OrchestratorService {
           });
         }
       } else {
-        // CRITICAL: ONLY use state - do not fall back to city
         if (tripData.state) {
-          // Set other fields from state for backward compatibility, but state is the source of truth
           tripData.to = tripData.state;
           tripData.destination = tripData.state;
-          tripData.city = tripData.state; // Set city for backward compatibility only
+          tripData.city = tripData.state;
         } else {
           logger.warn('No state provided - destination may be suggested by AI');
         }
@@ -928,16 +1067,14 @@ class OrchestratorService {
         });
       }
 
-      // Now use the regular planTrip flow with the destination
-      // Log tripData right before calling planTrip
       logger.info('planTripWithPreferences - About to call planTrip', {
         state: tripData.state,
         city: tripData.city,
         to: tripData.to,
         destination: tripData.destination
       });
-      
-      return await this.planTrip(tripData, progressCallback);
+
+      return await this.planTrip(tripData, progressCallback, options);
     } catch (error) {
       logger.error('Orchestrator Preferences Error:', error);
       throw error;
@@ -960,7 +1097,7 @@ class OrchestratorService {
       };
 
       // Re-run planning with updates
-      const newPlan = await this.planTrip(updatedTripData);
+      const newPlan = await this.planTrip(updatedTripData, null, { skipCache: true });
       
       // Merge with existing trip
       return {

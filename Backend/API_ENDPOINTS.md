@@ -127,7 +127,7 @@ Authorization: Bearer <token>
 ### 5. Plan Trip (Simple Flow - Destination + Days)
 **POST** `/api/trips/plan-trip`
 
-Generate a complete trip plan using AI orchestrator. For users who know their destination and dates.
+Generate a complete trip plan using the **hybrid orchestrator** (default): derived intent, Mongo **`DestinationCatalog`** or synthetic destination content, **one itinerary LLM**, formula budget, **weather in parallel** with itinerary. Set **`USE_LEGACY_AI_ORCHESTRATOR=true`** on the server for the older multi-LLM pipeline. For users who know their destination and dates.
 
 **Headers:**
 ```
@@ -164,7 +164,7 @@ Authorization: Bearer <token>
 ### 6. Plan Trip with Preferences (Advanced Flow)
 **POST** `/api/trips/plan-trip-with-preferences`
 
-Generate a trip plan based on travel preferences. AI will suggest destinations if not provided. Perfect for users who know what they want but need destination suggestions.
+Generate a trip plan from travel preferences. **Default:** if no destination is provided, the service suggests a city via **`DestinationCatalog`** (tags/season) or fallback — **no destination LLM**. Same hybrid pipeline as `/plan-trip` afterward. SSE (`?stream=true`) may emit **`itinerary-chunk`** with streamed HTML tokens. Perfect for users who want preferences-driven planning with an optional city.
 
 **Headers:**
 ```
@@ -224,7 +224,7 @@ Authorization: Bearer <token>
 }
 ```
 
-**Note:** If `destinationPreference` is not provided, AI will suggest destinations based on your preferences, season, and interests.
+**Note:** If `destinationPreference` / destination fields are not provided, the **hybrid** service suggests a city using **`DestinationCatalog`** (and interests/season), not a separate destination LLM, unless legacy orchestrator mode is enabled.
 
 ---
 

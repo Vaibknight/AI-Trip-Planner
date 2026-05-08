@@ -8,8 +8,8 @@ This document describes the API flow matching the UI requirements for the AI Tri
 1. **User opens site** → Frontend loads
 2. **Enters destination and dates** → Frontend collects input
 3. **Clicks "Generate"** → `POST /api/trips/plan-trip`
-4. **AI agents collaborate** → Backend orchestrates agents
-5. **User sees itinerary + budget (and optional map on demand)** → Frontend displays the plan immediately; the map is loaded only when the user clicks **Show map** (see [Response time and geocoding](#response-time-and-geocoding))
+4. **Backend plans the trip (hybrid orchestration)** → See [Hybrid orchestration (default)](#hybrid-orchestration-default) — one main LLM call for the **itinerary**; intent and budget are derived in code; destination copy comes from **MongoDB `DestinationCatalog`** when available; **weather** runs in parallel with itinerary generation; optional **trip plan cache** for repeat requests
+5. **User sees itinerary + budget (and optional map on demand)** → Frontend displays the plan immediately; the map loads only when the user clicks **Show map** (see [Response time and geocoding](#response-time-and-geocoding))
 6. **User tweaks (budget, days, interests)** → `PUT /api/trips/:id/tweak`
 7. **AI updates plan** → Backend re-plans with updates
 
@@ -17,8 +17,8 @@ This document describes the API flow matching the UI requirements for the AI Tri
 1. **User opens site** → Frontend loads
 2. **Selects preferences** (travel type, interests, season, duration, budget) → Frontend collects input
 3. **Clicks "Generate Travel Plan"** → `POST /api/trips/plan-trip-with-preferences`
-4. **AI suggests destinations** (if not provided) → Backend uses destination agent
-5. **AI agents collaborate** → Backend orchestrates all agents
+4. **Destination resolved** → If the user did not set a destination, the backend suggests a city from the **`DestinationCatalog`** (tags/season) or a safe default — **no destination LLM** in the default path
+5. **Backend plans the trip (hybrid orchestration)** → Same pipeline as the simple flow ([Hybrid orchestration (default)](#hybrid-orchestration-default))
 6. **User sees suggested destination + itinerary + budget** → Frontend displays results (map on demand via **Show map**)
 7. **User tweaks preferences** → `PUT /api/trips/:id/tweak`
 8. **AI updates plan** → Backend re-plans with updates
@@ -40,6 +40,25 @@ A large part of the wait was **geocoding**: turning free-text place names from t
 
 Together, moving geocoding off the critical path accounts for most of the improvement from roughly **~1m 30s** “until something useful is on screen” down to roughly **~30s** for the **core trip payload** (exact numbers vary with model latency and itinerary size). Map loading time is **explicit and optional**, not bundled into the first response.
 
+Further **orchestrator optimization** (fewer LLMs, parallel itinerary + weather, Mongo-backed destinations, in-memory trip cache) targets **much faster** plan generation — often on the order of **one main model round-trip** plus HTTP — see [Hybrid orchestration (default)](#hybrid-orchestration-default).
+
+### Hybrid orchestration (default)
+
+The optimized orchestrator (unless `USE_LEGACY_AI_ORCHESTRATOR=true`) works roughly as follows:
+
+| Stage | Behavior |
+|-------|----------|
+| **Intent** | Derived from request fields (`travelType`, `budgetRange`, dates/duration, interests`) — **no intent LLM** |
+| **Destination content** | Loaded from **`DestinationCatalog`** in MongoDB when `citySlug` matches the destination; otherwise a **synthetic** overview compatible with the rest of the pipeline |
+| **Weather** | **Open-Meteo** via coordinates; catalog may store **lat/lng** to skip geocoding for weather |
+| **Itinerary** | **Single LLM** call (compact prompt when POIs exist); optional **SSE `itinerary-chunk`** events while streaming |
+| **Budget** | **Formula-based** split of the user’s target budget — **no budget LLM** |
+| **Cache** | Identical requests may return a cached trip plan for ~1 hour (`TRIP_PLAN_CACHE_*` env vars) |
+
+**Legacy mode:** set **`USE_LEGACY_AI_ORCHESTRATOR=true`** to restore the older sequential flow (Intent LLM → Destination LLM → Itinerary LLM → Budget LLM).
+
+**Seed sample destinations:** `npm run seed:destinations` (populates example catalog rows).
+
 ### Mental model
 
 1. **Generate** → AI-only path → user reads itinerary right away.  
@@ -53,14 +72,14 @@ Frontend (Destination + Dates)
   ↓
 Backend API (/plan-trip)
   ↓
-Orchestrator
-  ├── Intent Agent (Understanding preferences)
-  ├── Destination Agent (Finding best destinations)
-  ├── Itinerary Agent (Creating itinerary)
-  ├── Budget Agent (Estimating budget)
-  └── Optimizer Agent (Optimizing plan)
+Orchestrator (hybrid default)
+  ├── Intent (derived from request — no LLM)
+  ├── Destination bundle (Mongo DestinationCatalog or synthetic HTML — no destination LLM)
+  ├── Itinerary Agent (LLM — compact itinerary HTML)
+  ├── Weather (Open-Meteo, parallel with itinerary; optional catalog lat/lng)
+  └── Budget (formula from target budget — no LLM)
   ↓
-Travel APIs + DB
+Travel APIs + DB + optional trip plan cache
   ↓
 Response → UI
 ```
@@ -71,17 +90,16 @@ Frontend (Preferences UI)
   ↓
 Backend API (/plan-trip-with-preferences)
   ↓
-Orchestrator
-  ├── Destination Suggestion (if destination not provided)
-  ├── Intent Agent (Understanding preferences)
-  ├── Destination Agent (Finding best destinations)
-  ├── Itinerary Agent (Creating itinerary)
-  ├── Budget Agent (Estimating budget)
-  └── Optimizer Agent (Optimizing plan)
+Orchestrator (hybrid default)
+  ├── Destination suggestion (if missing — catalog / default city; no destination LLM)
+  ├── Intent (derived — no LLM)
+  ├── Destination bundle (Mongo or synthetic)
+  ├── Itinerary Agent (LLM) ∥ Weather (parallel)
+  └── Budget (formula — no LLM)
   ↓
 Travel APIs + DB
   ↓
-Response → UI (with suggested destination)
+Response → UI (with suggested destination when applicable)
 ```
 
 ## API Endpoints
@@ -311,36 +329,25 @@ Generates a shareable link for the trip.
 
 ## Agent Flow Details
 
-### Step 1: Intent Agent
-- Analyzes user preferences
-- Determines trip purpose (leisure, business, adventure, etc.)
-- Categorizes budget (budget, moderate, luxury)
-- Identifies priority interests
+### Default (hybrid orchestrator)
 
-### Step 2: Destination Agent
-- Finds best destinations and routes
-- Recommends transportation options
-- Identifies key attractions
-- Suggests best time to visit
+| Step | Role |
+|------|------|
+| **Intent (derived)** | Maps `travelType`, budget fields, dates/duration, and interests into an intent object — **no LLM** |
+| **Destination bundle** | **`DestinationCatalog`** in MongoDB supplies attractions/areas/HTML when the city matches; otherwise a **synthetic** bundle compatible with the itinerary step |
+| **Itinerary Agent (LLM)** | Builds day-by-day HTML itinerary (compact prompt when POIs exist); only mandatory LLM in the fast path |
+| **Weather** | **Open-Meteo**; runs **in parallel** with itinerary when possible; catalog **lat/lng** avoids geocode lookup |
+| **Budget (formula)** | Splits the user’s **target** budget across categories — **no LLM** |
+| **Optimizer** | Optional step remains **skipped** for latency |
 
-### Step 3: Itinerary Agent
-- Creates day-by-day itinerary
-- Schedules activities with time slots
-- Suggests restaurants and accommodations
-- Plans realistic timing
+### Legacy mode (`USE_LEGACY_AI_ORCHESTRATOR=true`)
 
-### Step 4: Budget Agent
-- Estimates costs by category
-- Calculates per-person and per-day costs
-- Provides budget optimization suggestions
-- Compares with target budget
+Restores the older sequential pipeline using **Intent**, **Destination**, and **Budget** LLM agents (see agent classes under `src/services/agents/`).
 
-### Step 5: Optimizer Agent
-- Optimizes for time efficiency
-- Suggests cost-saving alternatives
-- Improves experience quality
-- Provides final recommendations
+### Step reference (unchanged module)
 
+- **Itinerary Agent** (`src/services/agents/itineraryAgent.js`) — day-by-day HTML itinerary; supports streaming tokens for SSE **`itinerary-chunk`** events.
+- **Optimizer Agent** — optional; still disabled in the default pipeline for speed.
 ## Error Handling
 
 All endpoints return consistent error responses:

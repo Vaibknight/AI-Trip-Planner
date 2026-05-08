@@ -159,6 +159,12 @@ If you were using OpenAI directly:
 
 The code automatically uses OpenRouter when `OPENROUTER_API_KEY` is set.
 
+## Trip planning and token usage (hybrid orchestrator)
+
+In the **default** backend flow, OpenRouter is used for the **itinerary** generation (and optional streaming to SSE as `itinerary-chunk`). **Intent** and **budget** are not LLM calls; **destination** text is loaded from MongoDB **`DestinationCatalog`** when available. That typically means **one main chat completion** per trip plan (plus any retries), which is faster and cheaper than invoking separate Intent, Destination, and Budget models on every request.
+
+To revert to the older multi-stage LLM pipeline, set **`USE_LEGACY_AI_ORCHESTRATOR=true`** in `.env` (see `API_FLOW.md`).
+
 ## Support
 
 - [OpenRouter Documentation](https://openrouter.ai/docs)

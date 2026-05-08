@@ -4,7 +4,8 @@ A production-ready Node.js backend API for an AI-powered trip planning applicati
 
 ## 🚀 Features
 
-- **AI-Powered Trip Generation** - Generate personalized trip itineraries using OpenRouter (supports GPT-4, Claude, and more)
+- **Hybrid trip orchestration** — Default path uses **MongoDB `DestinationCatalog`**, derived intent, formula budget, and **one itinerary LLM**; weather runs **in parallel** with itinerary generation; optional **in-memory trip cache**. Set `USE_LEGACY_AI_ORCHESTRATOR=true` for the older multi-LLM sequential flow.
+- **AI-Powered Trip Generation** - Itinerary HTML via OpenRouter (supports GPT-4, Claude, free tiers, and more)
 - **RESTful API** - Clean, well-structured REST endpoints
 - **Authentication & Authorization** - JWT-based authentication system
 - **Database Integration** - MongoDB with Mongoose ODM
@@ -32,24 +33,31 @@ backend/
 │   │   └── validate.js     # Validation middleware
 │   ├── models/              # Mongoose models
 │   │   ├── User.js
-│   │   └── Trip.js
+│   │   ├── Trip.js
+│   │   ├── GeocodeCache.js
+│   │   └── DestinationCatalog.js  # Curated POIs / destination HTML for hybrid planner
 │   ├── routes/              # API routes
 │   │   ├── auth.routes.js
 │   │   ├── trip.routes.js
 │   │   └── index.js
 │   ├── services/            # Business logic layer
 │   │   ├── openRouterClient.js  # OpenRouter integration
-│   │   ├── orchestratorService.js  # AI orchestrator
+│   │   ├── orchestratorService.js  # Trip orchestrator (hybrid + legacy)
+│   │   ├── destinationDataService.js  # Mongo catalog + synthetic destination bundle
+│   │   ├── budgetCalculator.js   # Formula budget (no LLM)
+│   │   ├── tripPlanCacheService.js
 │   │   ├── tripService.js  # Trip operations
 │   │   └── userService.js  # User operations
 │   ├── utils/               # Utility functions
 │   │   ├── jwt.js          # JWT helpers
-│   │   └── logger.js       # Winston logger
+│   │   ├── logger.js       # Winston logger
+│   │   └── intentDeriver.js # Intent object from request (no LLM)
 │   ├── validators/          # Validation schemas
 │   │   ├── tripValidator.js
 │   │   └── userValidator.js
 │   └── server.js            # Main server file
-├── logs/                    # Log files (gitignored)
+├── scripts/
+│   └── seed-destination-catalog.js  # Sample DestinationCatalog rows (npm run seed:destinations)
 ├── .env                     # Environment variables (gitignored)
 ├── .env.example             # Environment variables template
 ├── .gitignore
@@ -118,6 +126,13 @@ RATE_LIMIT_MAX=100
 
 # CORS
 CORS_ORIGIN=*
+
+# Hybrid orchestrator: set to true for legacy sequential Intent → Destination AI → Budget AI (slower)
+# USE_LEGACY_AI_ORCHESTRATOR=false
+
+# Trip plan cache (optimized orchestrator only)
+# TRIP_PLAN_CACHE_TTL_MS=3600000
+# TRIP_PLAN_CACHE_MAX_ENTRIES=200
 ```
 
 ## 📡 API Endpoints
@@ -157,6 +172,8 @@ CORS_ORIGIN=*
 - `GET /` - Welcome message
 - `GET /health` - Health check
 - `GET /api` - API documentation
+- `GET /api/maps/geocode` - Geocode a single place (auth)
+- `POST /api/maps/geocode/batch` - Batch geocode for maps UI (auth)
 
 ## 📝 API Usage Examples
 
@@ -238,6 +255,21 @@ Content-Type: application/json
   }
 }
 ```
+
+## Trip planning architecture (hybrid default)
+
+1. **Intent** — Built in code from `travelType`, budget fields, duration/dates, interests (`src/utils/intentDeriver.js`).
+2. **Destination content** — Loaded from **`DestinationCatalog`** when the city matches a slug; otherwise a minimal synthetic bundle (`src/services/destinationDataService.js`).
+3. **Itinerary** — Single **OpenRouter** completion (compact prompt when POIs exist) via `ItineraryAgent`.
+4. **Weather** — Open-Meteo; fetched **in parallel** with the itinerary; catalog **latitude/longitude** skips geocoding for weather.
+5. **Budget** — Fixed ratios against the user’s target total (`src/services/budgetCalculator.js`).
+6. **Cache** — Repeat identical requests may hit an in-memory cache (`tripPlanCacheService`).
+
+**Populate sample cities:** `npm run seed:destinations`
+
+**Maps / coordinates** — Resolved separately via `/api/maps/geocode*` and batch endpoints; not part of the core plan LLM path.
+
+See **`API_FLOW.md`** for diagrams, geocoding UX notes, and legacy mode.
 
 ## 🏗️ Architecture
 

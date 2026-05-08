@@ -15,8 +15,9 @@ class ItineraryAgent {
    * @param {Object} destinations - Destination data
    * @param {Function} onToken - Optional callback for token streaming
    */
-  async createItinerary(tripData, intent, destinations, onToken = null) {
+  async createItinerary(tripData, intent, destinations, onToken = null, options = {}) {
     try {
+      const compact = !!options.compact;
       // Build comprehensive prompt with all parameters
       // CRITICAL: ONLY use tripData.state - no fallbacks to city/to/destination
       // Only fall back to destinations.mainDestination if state is not provided
@@ -45,7 +46,34 @@ class ItineraryAgent {
         note: 'Only state field is used - no fallbacks to city/to/destination'
       });
       
-      const prompt = `Create a ${intent.estimatedDays}-day ${budgetLabel} ${season} tour of ${destination}.
+      const attractionNames = (destinations.attractions || [])
+        .slice(0, 12)
+        .map((a) => a.name)
+        .filter(Boolean);
+      const poiLine =
+        attractionNames.length > 0
+          ? attractionNames.join(', ')
+          : `${destination} highlights`;
+
+      const maxTokensFull =
+        config.openRouterModel && config.openRouterModel.includes(':free') ? 3000 : 2000;
+      const maxTokensCompact =
+        config.openRouterModel && config.openRouterModel.includes(':free') ? 1600 : 1100;
+      const maxTokens = compact ? maxTokensCompact : maxTokensFull;
+
+      const prompt = compact
+        ? `Create a ${intent.estimatedDays}-day ${budgetLabel} ${season} itinerary for ${destination} (${targetLanguage} for all traveler-visible text).
+
+Use these real POIs where they fit the schedule: ${poiLine}.
+Origin: ${origin}. Interests: ${intent.priorityInterests.join(', ') || 'general sightseeing'}.
+
+Output HTML only:
+<h1>${intent.estimatedDays}-Day ${budgetLabel} ${season} — ${destination}</h1>
+<h2>✈️ Travel Summary</h2>
+<table><tr><th>Leg</th><th>Notes</th></tr><tr><td>${origin} → ${destination}</td><td>[brief]</td></tr></table>
+Then <h2>📅 Day N</h2><ul><li>HH:MM — Activity at Real Place Name</li>...</ul> for each day.
+Rules: no lat/lng/GPS; 4–6 timed items/day; cafes where natural; match ${budgetRange}; valid HTML only; no markdown fences.`
+        : `Create a ${intent.estimatedDays}-day ${budgetLabel} ${season} tour of ${destination}.
 
 CRITICAL: The destination is ${destination}. You MUST create an itinerary for ${destination} specifically. Do NOT use a different city or destination. Use "${destination}" exactly as provided.
 CRITICAL LANGUAGE REQUIREMENT: Write all user-facing itinerary text in ${targetLanguage}.
@@ -113,7 +141,7 @@ CRITICAL REQUIREMENTS:
               }
             ],
             temperature: 0.3,
-            max_tokens: (config.openRouterModel && config.openRouterModel.includes(':free')) ? 3000 : 2000
+            max_tokens: maxTokens
           }, onToken);
           
           // Create response object from streamed content
@@ -148,7 +176,7 @@ CRITICAL REQUIREMENTS:
               }
             ],
             temperature: 0.3,
-            max_tokens: (config.openRouterModel && config.openRouterModel.includes(':free')) ? 3000 : 2000
+            max_tokens: maxTokens
           });
         } catch (jsonModeError) {
           logger.warn('Itinerary Agent: JSON mode not supported, trying without it', {
@@ -169,7 +197,7 @@ CRITICAL REQUIREMENTS:
               }
             ],
             temperature: 0.3,
-            max_tokens: (config.openRouterModel && config.openRouterModel.includes(':free')) ? 3000 : 2000
+            max_tokens: maxTokens
           });
         }
       }

@@ -410,8 +410,14 @@ const planTripWithPreferencesSSE = async (req, res, next) => {
     // Send initial connection event
     sendEvent('connected', { message: 'Connected to trip planning stream' });
 
-    // Generate trip plan with streaming updates
-    const tripPlan = await orchestratorService.planTripWithPreferences(tripData, progressCallback);
+    // Generate trip plan with streaming updates + optional token chunks during itinerary LLM stream
+    const tripPlan = await orchestratorService.planTripWithPreferences(tripData, progressCallback, {
+      onItineraryToken: (chunk) => {
+        sendEvent('itinerary-chunk', {
+          chunk: typeof chunk === 'string' ? chunk : String(chunk)
+        });
+      }
+    });
 
     // Create trip in database
     const trip = await tripService.createTrip(req.userId, tripPlan);
