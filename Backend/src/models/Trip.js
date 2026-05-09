@@ -195,7 +195,11 @@ const tripSchema = new mongoose.Schema({
     },
     interests: [String],
     dietaryRestrictions: [String],
-    accessibility: [String]
+    accessibility: [String],
+    preferredLanguage: {
+      type: String,
+      default: 'en'
+    }
   },
   status: {
     type: String,
@@ -259,8 +263,20 @@ const tripSchema = new mongoose.Schema({
     }],
     lastUpdated: Date
   },
+  bestTimeToVisit: {
+    months: String,
+    reason: String,
+    avoid: String,
+    tips: [String]
+  },
   recommendedAreas: [String], // Recommended areas/neighborhoods for 2-3 day trips
   tags: [String],
+  generationMetrics: {
+    responseTimeMs: { type: Number },
+    throughputCharsPerSec: { type: Number },
+    pipelineErrorRatePercent: { type: Number },
+    recommendationAccuracyPercent: { type: Number }
+  },
   createdAt: {
     type: Date,
     default: Date.now

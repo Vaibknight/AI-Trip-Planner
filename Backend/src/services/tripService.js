@@ -1,5 +1,6 @@
 const Trip = require('../models/Trip');
 const logger = require('../utils/logger');
+const { normalizeTransportationRecommended } = require('../utils/transportationEnum');
 
 class TripService {
   /**
@@ -15,6 +16,16 @@ class TripService {
           city: dest.city || '',
           country: dest.country || ''
         }));
+      }
+
+      if (tripData.transportation && tripData.transportation.recommended != null && tripData.transportation.recommended !== '') {
+        tripData = {
+          ...tripData,
+          transportation: {
+            ...tripData.transportation,
+            recommended: normalizeTransportationRecommended(tripData.transportation.recommended)
+          }
+        };
       }
 
       const trip = new Trip({

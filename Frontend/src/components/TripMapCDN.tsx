@@ -1,256 +1,269 @@
 "use client";
 
-import { useEffect, useMemo, useState, useRef } from "react";
-import type { TripData } from "@/lib/api/types";
+import { useEffect, useRef, useState } from "react";
+import type { MapPin, GeocodeUiStatus } from "@/hooks/useTripGeocoding";
+
+/** Abort stale async Leaflet sync when pins update again (e.g. second geocode wave). */
 
 interface TripMapCDNProps {
-  plan: TripData;
+  pins: MapPin[];
+  status: GeocodeUiStatus;
+  errorMessage?: string | null;
+  /** Second batch (meals, etc.) still resolving */
+  lazyGeocoding?: boolean;
+  /** Hide outer card + title (parent shows header) */
+  embedded?: boolean;
+  onRetry?: () => void;
 }
 
-export default function TripMapCDN({ plan }: TripMapCDNProps) {
+export default function TripMapCDN({
+  pins,
+  status,
+  errorMessage,
+  lazyGeocoding = false,
+  embedded = false,
+  onRetry,
+}: TripMapCDNProps) {
   const mapRef = useRef<HTMLDivElement>(null);
-  const [isLoaded, setIsLoaded] = useState(false);
+  const [leafletReady, setLeafletReady] = useState(false);
   const mapInstanceRef = useRef<any>(null);
-
-  // Extract coordinates from itinerary activities and HTML fallback
-  const locations = useMemo(() => {
-    const coords: Array<{
-      lat: number;
-      lng: number;
-      name: string;
-      day: number;
-      time?: string;
-      type?: string;
-    }> = [];
-
-    // First, try to extract from itinerary array
-    if (plan?.itinerary && Array.isArray(plan.itinerary)) {
-      plan.itinerary.forEach((day) => {
-        if (day.activities && Array.isArray(day.activities)) {
-          day.activities.forEach((activity) => {
-            if (
-              activity.coordinates &&
-              typeof activity.coordinates.latitude === 'number' &&
-              typeof activity.coordinates.longitude === 'number'
-            ) {
-              coords.push({
-                lat: activity.coordinates.latitude,
-                lng: activity.coordinates.longitude,
-                name: activity.name || "Activity",
-                day: day.day || 0,
-                time: activity.startTime || "",
-                type: activity.type || "activity",
-              });
-            }
-          });
-        }
-      });
-    }
-
-    // If no coordinates found in itinerary array, extract from itineraryHtml
-    if (coords.length === 0 && plan?.itineraryHtml) {
-      console.log("No coordinates in itinerary array, extracting from HTML...");
-      
-      // Parse HTML to extract coordinates
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(plan.itineraryHtml, 'text/html');
-      const listItems = doc.querySelectorAll('li[data-lat][data-lon]');
-      
-      listItems.forEach((li, index) => {
-        const lat = parseFloat(li.getAttribute('data-lat') || '');
-        const lon = parseFloat(li.getAttribute('data-lon') || '');
-        const text = li.textContent?.trim() || '';
-        
-        if (!isNaN(lat) && !isNaN(lon)) {
-          // Extract time and activity name from text (format: "08:00 — Activity Name")
-          const timeMatch = text.match(/^(\d{2}:\d{2})/);
-          const time = timeMatch ? timeMatch[1] : '';
-          const name = text.replace(/^\d{2}:\d{2}\s*—\s*/, '') || 'Activity';
-          
-          // Try to determine day from the HTML structure
-          let day = 1;
-          const dayHeader = li.closest('ul')?.previousElementSibling;
-          if (dayHeader && dayHeader.tagName === 'H2') {
-            const dayMatch = dayHeader.textContent?.match(/Day\s+(\d+)/i);
-            if (dayMatch) {
-              day = parseInt(dayMatch[1], 10);
-            }
-          }
-          
-          coords.push({
-            lat,
-            lng: lon,
-            name,
-            day,
-            time,
-            type: 'activity',
-          });
-        }
-      });
-      
-      console.log(`Extracted ${coords.length} locations from HTML`);
-    }
-
-    console.log(`=== Total locations extracted: ${coords.length} ===`, coords);
-    return coords;
-  }, [plan]);
+  const markersRef = useRef<Map<string, any>>(new Map());
+  const pinsRef = useRef<MapPin[]>(pins);
+  pinsRef.current = pins;
+  const syncGenerationRef = useRef(0);
 
   useEffect(() => {
-    if (locations.length === 0) {
-      console.log("No locations found, skipping map initialization");
+    const onFocus = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ key: string }>).detail;
+      if (!detail?.key) return;
+      const marker = markersRef.current.get(detail.key);
+      const map = mapInstanceRef.current;
+      if (marker && map) {
+        marker.openPopup();
+        map.setView(marker.getLatLng(), Math.max(map.getZoom(), 13), {
+          animate: true,
+        });
+      }
+    };
+    window.addEventListener("trip-map-focus", onFocus as EventListener);
+    return () =>
+      window.removeEventListener("trip-map-focus", onFocus as EventListener);
+  }, []);
+
+  useEffect(() => {
+    if (pins.length === 0 || status !== "ready") {
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current.remove();
+        mapInstanceRef.current = null;
+      }
+      markersRef.current.clear();
+      setLeafletReady(false);
       return;
     }
 
-    if (!mapRef.current) {
-      console.log("Map ref not available yet");
-      return;
-    }
+    if (!mapRef.current) return;
 
-    console.log("Initializing map with", locations.length, "locations");
+    const generation = ++syncGenerationRef.current;
 
-    const loadMap = async () => {
+    const syncMarkers = async () => {
       try {
-        // Load Leaflet CSS
         if (!document.querySelector('link[href*="leaflet.css"]')) {
           const link = document.createElement("link");
           link.rel = "stylesheet";
           link.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
-          link.integrity = "sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=";
+          link.integrity =
+            "sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=";
           link.crossOrigin = "";
           document.head.appendChild(link);
-          console.log("Leaflet CSS loaded");
         }
 
-        // Load Leaflet JS from CDN
         if (!(window as any).L) {
-          console.log("Loading Leaflet JS from CDN...");
           await new Promise<void>((resolve, reject) => {
             const script = document.createElement("script");
             script.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
-            script.integrity = "sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=";
+            script.integrity =
+              "sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=";
             script.crossOrigin = "";
-            script.onload = () => {
-              console.log("Leaflet JS loaded successfully");
-              resolve();
-            };
-            script.onerror = () => {
-              console.error("Failed to load Leaflet JS");
-              reject(new Error("Failed to load Leaflet"));
-            };
+            script.onload = () => resolve();
+            script.onerror = () => reject(new Error("Failed to load Leaflet"));
             document.head.appendChild(script);
           });
         }
 
+        if (generation !== syncGenerationRef.current) return;
+
         const L = (window as any).L;
-        if (!L) {
-          throw new Error("Leaflet not loaded");
+        if (!L || !mapRef.current) {
+          throw new Error("Leaflet not available");
         }
 
-        console.log("Leaflet library available, creating map...");
+        /** Always use latest pins so a stale async pass cannot drop markers from a newer wave */
+        const pinsNow = pinsRef.current;
+        const pinKeys = new Set(pinsNow.map((p) => p.key));
 
-        // Calculate center and bounds
-        const avgLat = locations.reduce((sum, loc) => sum + loc.lat, 0) / locations.length;
-        const avgLng = locations.reduce((sum, loc) => sum + loc.lng, 0) / locations.length;
+        if (generation !== syncGenerationRef.current) return;
 
-        console.log("Map center:", avgLat, avgLng);
+        for (const [key, marker] of markersRef.current) {
+          if (!pinKeys.has(key)) {
+            marker.remove();
+            markersRef.current.delete(key);
+          }
+        }
 
-        // Initialize map
-        const map = L.map(mapRef.current!, {
-          center: [avgLat, avgLng],
-          zoom: 12,
-        });
+        let map = mapInstanceRef.current;
 
-        // Add tile layer
-        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-          maxZoom: 19,
-        }).addTo(map);
+        if (!map) {
+          const avgLat =
+            pinsNow.reduce((s, p) => s + p.lat, 0) /
+            Math.max(pinsNow.length, 1);
+          const avgLng =
+            pinsNow.reduce((s, p) => s + p.lng, 0) /
+            Math.max(pinsNow.length, 1);
 
-        console.log("Tile layer added");
+          map = L.map(mapRef.current, {
+            center: [avgLat, avgLng],
+            zoom: 11,
+          });
 
-        // Add markers
+          L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+            attribution:
+              '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+            maxZoom: 19,
+          }).addTo(map);
+
+          mapInstanceRef.current = map;
+        }
+
+        if (generation !== syncGenerationRef.current) return;
+
+        for (const loc of pinsNow) {
+          if (markersRef.current.has(loc.key)) continue;
+
+          const marker = L.marker([loc.lat, loc.lng]).addTo(map);
+          let popup = `<div style="font-size:14px"><strong>${escapeHtml(
+            loc.label
+          )}</strong><br/>`;
+          if (loc.day) popup += `Day ${loc.day}<br/>`;
+          if (loc.time) popup += `${loc.time}<br/>`;
+          popup += `</div>`;
+          marker.bindPopup(popup);
+          markersRef.current.set(loc.key, marker);
+        }
+
+        if (generation !== syncGenerationRef.current) return;
+
         const bounds = L.latLngBounds([]);
-        locations.forEach((location, index) => {
-          console.log(`Adding marker ${index + 1}:`, location.name, location.lat, location.lng);
-          const marker = L.marker([location.lat, location.lng]).addTo(map);
-          
-          let popupContent = `<div style="font-size: 14px;">
-            <strong>${location.name}</strong><br/>`;
-          if (location.day) {
-            popupContent += `Day ${location.day}<br/>`;
-          }
-          if (location.time) {
-            popupContent += `Time: ${location.time}<br/>`;
-          }
-          if (location.type) {
-            popupContent += `<span style="text-transform: capitalize;">${location.type}</span>`;
-          }
-          popupContent += `</div>`;
-          
-          marker.bindPopup(popupContent);
-          bounds.extend([location.lat, location.lng]);
-        });
-
-        console.log("All markers added, fitting bounds...");
-
-        // Fit map to bounds
-        if (locations.length > 0) {
+        pinsNow.forEach((loc) => bounds.extend([loc.lat, loc.lng]));
+        if (pinsNow.length > 0 && map) {
           map.fitBounds(bounds, { padding: [50, 50] });
         }
 
-        mapInstanceRef.current = map;
-        setIsLoaded(true);
-        console.log("Map initialized successfully");
-      } catch (error) {
-        console.error("Error loading map:", error);
-        setIsLoaded(true); // Set loaded even on error to show the container
+        if (generation !== syncGenerationRef.current) return;
+
+        setLeafletReady(true);
+      } catch (e) {
+        console.error("Trip map error:", e);
       }
     };
 
-    loadMap();
+    void syncMarkers();
+  }, [pins, status]);
 
-    // Cleanup
+  useEffect(() => {
     return () => {
       if (mapInstanceRef.current) {
         mapInstanceRef.current.remove();
         mapInstanceRef.current = null;
       }
+      markersRef.current.clear();
     };
-  }, [locations]);
+  }, []);
 
-  if (locations.length === 0) {
-    return (
-      <div className="bg-white dark:bg-gray-800 rounded-lg p-6 border border-gray-200 dark:border-gray-700">
+  const showLoading =
+    status === "loading" ||
+    (status === "ready" && pins.length > 0 && !leafletReady);
+
+  const shellClass = embedded
+    ? "mt-4"
+    : "bg-white dark:bg-gray-800 rounded-lg p-6 border border-gray-200 dark:border-gray-700 scroll-mt-4";
+
+  return (
+    <div className={shellClass} id={embedded ? undefined : "trip-map-anchor"}>
+      {!embedded && (
         <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-4">
           🗺️ Trip Map
         </h3>
-        <p className="text-gray-600 dark:text-gray-400">
-          No location coordinates available for this trip.
-        </p>
-      </div>
-    );
-  }
+      )}
 
-  return (
-    <div className="bg-white dark:bg-gray-800 rounded-lg p-6 border border-gray-200 dark:border-gray-700">
-      <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-4">
-        🗺️ Trip Map
-      </h3>
-      <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
-        Showing {locations.length} location{locations.length !== 1 ? "s" : ""} from your itinerary
-      </p>
-      <div 
-        ref={mapRef}
-        className="h-[500px] w-full rounded-lg overflow-hidden border border-gray-300 dark:border-gray-600"
-        style={{ minHeight: "500px" }}
-      >
-        {!isLoaded && (
-          <div className="h-full w-full flex items-center justify-center bg-gray-100 dark:bg-gray-700">
-            <p className="text-gray-600 dark:text-gray-400">Loading map...</p>
-          </div>
-        )}
-      </div>
+      {status === "loading" && (
+        <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+          Loading priority stops on the map…
+        </p>
+      )}
+
+      {lazyGeocoding && status === "ready" && (
+        <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+          Adding more itinerary stops in the background…
+        </p>
+      )}
+
+      {status === "error" && (
+        <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-sm text-amber-700 dark:text-amber-300">
+            Map could not be loaded: {errorMessage || "Unknown error"}. Your
+            itinerary is still available below.
+          </p>
+          {onRetry && (
+            <button
+              type="button"
+              onClick={onRetry}
+              className="shrink-0 rounded-lg border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-medium text-amber-900 hover:bg-amber-100 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-100 dark:hover:bg-amber-900/40"
+            >
+              Try again
+            </button>
+          )}
+        </div>
+      )}
+
+      {status === "ready" && pins.length === 0 && !lazyGeocoding && (
+        <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+          No mappable places were resolved for this trip. Try opening a place
+          from a major city or landmark name.
+        </p>
+      )}
+
+      {status === "ready" && pins.length > 0 && (
+        <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+          Showing {pins.length} location{pins.length !== 1 ? "s" : ""} from your
+          itinerary
+        </p>
+      )}
+
+      {(pins.length > 0 || status === "loading") && (
+        <div
+          ref={mapRef}
+          className="h-[500px] w-full rounded-lg overflow-hidden border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900"
+          style={{ minHeight: "500px" }}
+        >
+          {showLoading && (
+            <div className="h-full w-full flex items-center justify-center">
+              <p className="text-gray-600 dark:text-gray-400">
+                {status === "loading"
+                  ? "Loading map data…"
+                  : "Initializing map…"}
+              </p>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}

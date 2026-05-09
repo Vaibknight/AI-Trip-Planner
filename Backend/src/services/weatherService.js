@@ -59,7 +59,7 @@ class WeatherService {
     });
   }
 
-  async getDestinationWeather({ city, country = '' }) {
+  async getDestinationWeather({ city, country = '', latitude, longitude }) {
     if (!city || typeof city !== 'string') {
       return null;
     }
@@ -71,7 +71,20 @@ class WeatherService {
     }
 
     try {
-      const coordinates = await geocodingService.geocode(city, country || null);
+      let coordinates = null;
+      if (
+        latitude != null &&
+        longitude != null &&
+        Number.isFinite(Number(latitude)) &&
+        Number.isFinite(Number(longitude))
+      ) {
+        coordinates = {
+          latitude: Number(latitude),
+          longitude: Number(longitude)
+        };
+      } else {
+        coordinates = await geocodingService.geocode(city, country || null);
+      }
       if (!coordinates?.latitude || !coordinates?.longitude) {
         logger.warn('Weather: unable to geocode destination', { city, country });
         return null;

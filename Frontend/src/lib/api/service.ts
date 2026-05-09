@@ -37,6 +37,7 @@ export class TripService extends BaseService<typeof tripRoutes> {
       state: preferences.state,
       travelers: preferences.travelers,
       currency: preferences.currency,
+      preferredLanguage: preferences.preferredLanguage || "en",
     };
 
     // Add start and end datetime if available

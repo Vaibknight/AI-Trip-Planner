@@ -2,6 +2,8 @@
 
 This guide shows you how to test the SSE streaming implementation for the trip planning endpoint.
 
+The backend uses a **hybrid orchestrator** by default (single itinerary LLM + parallel weather). Progress step names/messages match that flow. Set **`USE_LEGACY_AI_ORCHESTRATOR=true`** to restore older multi-agent progress text.
+
 ## Prerequisites
 
 1. **Get a JWT Token**: First, you need to authenticate and get a JWT token
@@ -105,26 +107,30 @@ while (true) {
 
 ## Expected SSE Events
 
-You should see events in this order:
+You should see events in roughly this order (default **hybrid** orchestrator):
 
 1. **`connected`**: Initial connection
    ```json
    {"message": "Connected to trip planning stream"}
    ```
 
-2. **`progress`**: Step updates
+2. **`progress`**: Step updates (messages reflect the optimized pipeline)
    ```json
    {"step": "understanding", "status": "in_progress", "message": "Understanding your preferences"}
    {"step": "understanding", "status": "completed", "message": "Understanding your preferences"}
-   {"step": "destinations", "status": "in_progress", "message": "Finding best destinations"}
-   {"step": "destinations", "status": "completed", "message": "Finding best destinations"}
+   {"step": "destinations", "status": "in_progress", "message": "Loading destination insights"}
+   {"step": "destinations", "status": "completed", "message": "Destination ready"}
    {"step": "itinerary", "status": "in_progress", "message": "Creating itinerary"}
    {"step": "itinerary", "status": "completed", "message": "Creating itinerary"}
    {"step": "budget", "status": "in_progress", "message": "Estimating budget"}
    {"step": "budget", "status": "completed", "message": "Estimating budget"}
    ```
 
-3. **`complete`**: Final trip data
+   If no destination was sent, you may first see **`suggesting`** / **`Destinations suggested`** for catalog-based city pick.
+
+3. **`itinerary-chunk`** (optional): Raw **tokens** streamed while the itinerary LLM is generating HTML (payload shape: `{ "chunk": "..." }`). Only emitted when the model streams successfully.
+
+4. **`complete`**: Final trip data
    ```json
    {
      "status": "success",
@@ -141,7 +147,7 @@ You should see events in this order:
    }
    ```
 
-4. **`error`**: If something goes wrong
+5. **`error`**: If something goes wrong
    ```json
    {"status": "error", "message": "Error message here"}
    ```
@@ -178,5 +184,5 @@ curl -X POST http://localhost:3000/api/trips/plan-trip-with-preferences \
   }'
 ```
 
-This will return a regular JSON response after ~45 seconds.
+This will return a regular JSON response after planning completes (typically **much faster** than the old multi-agent sequential flow; exact time depends on the OpenRouter model and itinerary length).
 

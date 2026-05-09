@@ -45,6 +45,7 @@ function generateCacheKey(preferences: TripPreferences): string {
     budgetRangeString: normalizedBudgetRangeString,
     travelers: Number(preferences.travelers),
     currency: preferences.currency?.toUpperCase().trim(),
+    preferredLanguage: (preferences.preferredLanguage || "en").toLowerCase().trim(),
     startDateTime: normalizeDate(preferences.startDateTime),
     endDateTime: normalizeDate(preferences.endDateTime),
     // Legacy fields for backward compatibility
@@ -130,6 +131,9 @@ export function getCachedTripPlan(
           }
         };
         
+        const lang = (p: TripPreferences) =>
+          (p.preferredLanguage || "en").toLowerCase().trim();
+
         const matches = 
           // New fields
           (cachedPrefs.origin?.toLowerCase().trim() || cachedPrefs.destination?.toLowerCase().trim()) === 
@@ -147,6 +151,7 @@ export function getCachedTripPlan(
           (preferences.budgetRangeString?.trim() || String(normalizedBudget)) &&
           Number(cachedPrefs.travelers) === Number(preferences.travelers) &&
           cachedPrefs.currency?.toUpperCase().trim() === preferences.currency?.toUpperCase().trim() &&
+          lang(cachedPrefs) === lang(preferences) &&
           normalizeDate(cachedPrefs.startDateTime || cachedPrefs.arrivalDateTime) === 
           normalizeDate(preferences.startDateTime || preferences.arrivalDateTime) &&
           normalizeDate(cachedPrefs.endDateTime || cachedPrefs.departureDateTime) === 
@@ -200,6 +205,7 @@ function normalizePreferences(preferences: TripPreferences): TripPreferences {
     budget: Math.round(preferences.budget || 0), // Normalize budget to integer
     travelers: Number(preferences.travelers),
     currency: preferences.currency?.toUpperCase().trim() || '',
+    preferredLanguage: (preferences.preferredLanguage || "en").toLowerCase().trim(),
     startDateTime: normalizeDate(preferences.startDateTime || preferences.arrivalDateTime),
     endDateTime: normalizeDate(preferences.endDateTime || preferences.departureDateTime),
     // Legacy datetime fields

@@ -8,9 +8,13 @@ This document shows the structure of the trip plan response that matches your UI
 For users who know destination and dates.
 
 ### 2. Preferences Flow: `POST /api/trips/plan-trip-with-preferences`
-For users who want AI to suggest destinations based on preferences.
+For users who want a **suggested city** (from MongoDB **`DestinationCatalog`** by default) when none is provided, plus preference-driven planning. Response shape matches the simple flow.
 
 Both endpoints return the same response structure.
+
+### Orchestration note
+
+The **default** planner calls OpenRouter primarily for the **itinerary HTML** (compact prompt when catalog POIs exist). Intent and budget are computed in application code; destination prose comes from **`DestinationCatalog`** or a synthetic fallback. Set **`USE_LEGACY_AI_ORCHESTRATOR=true`** to restore multiple LLM stages per request.
 
 ## Example Response Structure
 

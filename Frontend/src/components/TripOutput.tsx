@@ -4,9 +4,12 @@ import dynamic from "next/dynamic";
 import { useMemo } from "react";
 import type { TripPreferences } from "@/types/trip";
 import type { TripData } from "@/lib/api/types";
+import GenerationMetricsPanel from "@/components/GenerationMetricsPanel";
+import { useTripGeocoding } from "@/hooks/useTripGeocoding";
+import ItineraryHtmlMapEnhanced from "@/components/ItineraryHtmlMapEnhanced";
+import { cleanActivityQuery, normalizePlaceKey } from "@/lib/itineraryPlaces";
 
 // Dynamically import the map component to avoid SSR issues
-// Using CDN-based version to avoid module resolution issues
 const TripMap = dynamic(() => import("./TripMapCDN"), {
   ssr: false,
   loading: () => (
@@ -15,7 +18,7 @@ const TripMap = dynamic(() => import("./TripMapCDN"), {
         🗺️ Trip Map
       </h3>
       <div className="h-[500px] w-full rounded-lg bg-gray-100 dark:bg-gray-700 flex items-center justify-center">
-        <p className="text-gray-600 dark:text-gray-400">Loading map...</p>
+        <p className="text-gray-600 dark:text-gray-400">Preparing map…</p>
       </div>
     </div>
   ),
@@ -27,55 +30,14 @@ interface TripOutputProps {
 }
 
 export default function TripOutput({ preferences, plan }: TripOutputProps) {
-  if (!plan) return null;
-
-  // Debug: Log to verify data structure
-  console.log("Full plan object:", plan);
-  console.log("Transportation:", plan.transportation);
-  console.log("Local Transportation exists:", !!plan.transportation?.localTransportation);
-  if (plan.transportation?.localTransportation) {
-    console.log("Local Transportation data:", plan.transportation.localTransportation);
-    console.log("Local Transportation keys:", Object.keys(plan.transportation.localTransportation));
-  }
-
-  const formatDate = (dateString?: string) => {
-    if (!dateString) return "";
-    try {
-      return new Date(dateString).toLocaleDateString("en-US", {
-        weekday: "long",
-        year: "numeric",
-        month: "long",
-        day: "numeric",
-      });
-    } catch {
-      return dateString;
-    }
-  };
-
-  const formatDateTime = (dateString?: string) => {
-    if (!dateString) return "";
-    try {
-      return new Date(dateString).toLocaleString("en-US", {
-        year: "numeric",
-        month: "long",
-        day: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-      });
-    } catch {
-      return dateString;
-    }
-  };
-
-  const formatWeatherTemp = (value?: number) =>
-    typeof value === "number" ? `${value.toFixed(1)}°C` : "N/A";
+  const geo = useTripGeocoding(plan ?? null);
 
   const hotelBookingFromHtml = useMemo(() => {
-    if (!plan.itineraryHtml) return null;
+    if (!plan?.itineraryHtml) return null;
 
     try {
       const parser = new DOMParser();
-      const doc = parser.parseFromString(plan.itineraryHtml, "text/html");
+      const doc = parser.parseFromString(plan!.itineraryHtml!, "text/html");
       const sectionHeading = Array.from(doc.querySelectorAll("h1, h2, h3")).find((el) =>
         /hotel booking suggestions/i.test(el.textContent || "")
       );
@@ -124,9 +86,108 @@ export default function TripOutput({ preferences, plan }: TripOutputProps) {
     } catch {
       return null;
     }
-  }, [plan.itineraryHtml]);
+  }, [plan?.itineraryHtml]);
 
-  const hotelBookingData = plan.hotelBooking || hotelBookingFromHtml;
+  const hotelBookingData = plan?.hotelBooking || hotelBookingFromHtml;
+
+  const bestTimeToVisitFromHtml = useMemo(() => {
+    if (!plan?.itineraryHtml) return null;
+
+    try {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(plan!.itineraryHtml!, "text/html");
+      const sectionHeading = Array.from(doc.querySelectorAll("h1, h2, h3")).find((el) =>
+        /best time to visit/i.test(el.textContent || "")
+      );
+
+      if (!sectionHeading) return null;
+
+      const result: {
+        months?: string;
+        reason?: string;
+        avoid?: string;
+        tips?: string[];
+      } = { tips: [] };
+
+      let node = sectionHeading.nextElementSibling;
+      while (node && !/^H[1-2]$/i.test(node.tagName)) {
+        if (node.tagName === "P") {
+          const text = (node.textContent || "").trim();
+          const monthsMatch = text.match(/Ideal months:\s*(.+)$/i);
+          const reasonMatch = text.match(/Why:\s*(.+)$/i);
+          const avoidMatch = text.match(/Avoid if possible:\s*(.+)$/i);
+
+          if (monthsMatch) result.months = monthsMatch[1].trim();
+          if (reasonMatch) result.reason = reasonMatch[1].trim();
+          if (avoidMatch) result.avoid = avoidMatch[1].trim();
+        }
+
+        if (node.tagName === "UL") {
+          const tips = Array.from(node.querySelectorAll("li"))
+            .map((li) => (li.textContent || "").trim())
+            .filter(Boolean);
+          if (tips.length > 0) {
+            result.tips = [...(result.tips || []), ...tips];
+          }
+        }
+
+        node = node.nextElementSibling;
+      }
+
+      if (!result.months && !result.reason && !result.avoid && (!result.tips || result.tips.length === 0)) {
+        return null;
+      }
+
+      return result;
+    } catch {
+      return null;
+    }
+  }, [plan?.itineraryHtml]);
+
+  const bestTimeToVisitData = plan?.bestTimeToVisit || bestTimeToVisitFromHtml;
+
+  if (!plan) return null;
+
+  const formatDate = (dateString?: string) => {
+    if (!dateString) return "";
+    try {
+      return new Date(dateString).toLocaleDateString("en-US", {
+        weekday: "long",
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+      });
+    } catch {
+      return dateString;
+    }
+  };
+
+  const formatDateTime = (dateString?: string) => {
+    if (!dateString) return "";
+    try {
+      return new Date(dateString).toLocaleString("en-US", {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    } catch {
+      return dateString;
+    }
+  };
+
+  const formatWeatherTemp = (value?: number) =>
+    typeof value === "number" ? `${value.toFixed(1)}°C` : "N/A";
+
+  // Debug: Log to verify data structure
+  console.log("Full plan object:", plan);
+  console.log("Transportation:", plan.transportation);
+  console.log("Local Transportation exists:", !!plan.transportation?.localTransportation);
+  if (plan.transportation?.localTransportation) {
+    console.log("Local Transportation data:", plan.transportation.localTransportation);
+    console.log("Local Transportation keys:", Object.keys(plan.transportation.localTransportation));
+  }
 
   return (
     <div className="space-y-6">
@@ -167,6 +228,56 @@ export default function TripOutput({ preferences, plan }: TripOutputProps) {
             <span className="font-semibold">Trip Dates:</span>{" "}
             {formatDateTime(plan.startDate)} - {formatDateTime(plan.endDate)}
           </div>
+        )}
+      </div>
+
+      {plan.generationMetrics && (
+        <GenerationMetricsPanel metrics={plan.generationMetrics} />
+      )}
+
+      {/* Trip map — loads on demand (POST /api/maps/geocode/batch) */}
+      <div
+        id="trip-map-anchor"
+        className="bg-white dark:bg-gray-800 rounded-lg p-6 border border-gray-200 dark:border-gray-700 scroll-mt-4"
+      >
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h3 className="text-xl font-bold text-gray-900 dark:text-white">
+              🗺️ Trip map
+            </h3>
+            <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">
+              Priority landmarks and day anchors load first; remaining stops
+              fill in shortly after. Your full itinerary stays visible while this
+              runs.
+            </p>
+          </div>
+          {geo.hasExtractedPlaces && !geo.mapSessionActive && (
+            <button
+              type="button"
+              onClick={() => void geo.loadMap()}
+              className="shrink-0 rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white shadow hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600"
+            >
+              Show map
+            </button>
+          )}
+        </div>
+
+        {!geo.hasExtractedPlaces && (
+          <p className="mt-4 text-sm text-gray-600 dark:text-gray-400">
+            No mappable stops found yet (named places in your itinerary will appear
+            here).
+          </p>
+        )}
+
+        {geo.mapSessionActive && (
+          <TripMap
+            embedded
+            pins={geo.mapPins}
+            status={geo.status}
+            errorMessage={geo.errorMessage}
+            lazyGeocoding={geo.lazyGeocoding}
+            onRetry={() => void geo.loadMap()}
+          />
         )}
       </div>
 
@@ -355,10 +466,6 @@ export default function TripOutput({ preferences, plan }: TripOutputProps) {
         </div>
       )}
 
-      {/* Trip Map */}
-      {plan && <TripMap plan={plan} />}
-
-      {/* Hotel Booking Suggestions */}
       {hotelBookingData && (
         <div className="bg-white dark:bg-gray-800 rounded-lg p-6 border border-gray-200 dark:border-gray-700">
           <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-4">
@@ -399,6 +506,44 @@ export default function TripOutput({ preferences, plan }: TripOutputProps) {
 
           {hotelBookingData.note && (
             <p className="text-xs text-gray-500 dark:text-gray-400">{hotelBookingData.note}</p>
+          )}
+        </div>
+      )}
+
+      {/* Best Time To Visit */}
+      {bestTimeToVisitData && (
+        <div className="bg-white dark:bg-gray-800 rounded-lg p-6 border border-gray-200 dark:border-gray-700">
+          <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-4">
+            🗓️ Best Time to Visit
+          </h3>
+
+          <div className="space-y-3 text-sm text-gray-700 dark:text-gray-300">
+            {bestTimeToVisitData.months && (
+              <p>
+                <strong>Ideal months:</strong> {bestTimeToVisitData.months}
+              </p>
+            )}
+            {bestTimeToVisitData.reason && (
+              <p>
+                <strong>Why:</strong> {bestTimeToVisitData.reason}
+              </p>
+            )}
+            {bestTimeToVisitData.avoid && (
+              <p>
+                <strong>Avoid if possible:</strong> {bestTimeToVisitData.avoid}
+              </p>
+            )}
+          </div>
+
+          {bestTimeToVisitData.tips && bestTimeToVisitData.tips.length > 0 && (
+            <div className="bg-amber-50 dark:bg-amber-900/20 rounded-lg p-4 mt-4 border border-amber-200 dark:border-amber-700">
+              <p className="font-semibold text-gray-900 dark:text-white mb-2">💡 Seasonal Tips</p>
+              <ul className="list-disc list-inside space-y-1 text-sm text-gray-700 dark:text-gray-300">
+                {bestTimeToVisitData.tips.map((tip, idx) => (
+                  <li key={idx}>{tip}</li>
+                ))}
+              </ul>
+            </div>
           )}
         </div>
       )}
@@ -637,9 +782,10 @@ export default function TripOutput({ preferences, plan }: TripOutputProps) {
           <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-4">
             📅 Detailed Itinerary
           </h3>
-          <div
+          <ItineraryHtmlMapEnhanced
+            html={plan.itineraryHtml}
+            coordsByKey={geo.coordsByKey}
             className="prose prose-lg dark:prose-invert max-w-none"
-            dangerouslySetInnerHTML={{ __html: plan.itineraryHtml }}
           />
         </div>
       )}
@@ -701,6 +847,34 @@ export default function TripOutput({ preferences, plan }: TripOutputProps) {
                               {activity.type && (
                                 <span className="capitalize">🏷️ {activity.type}</span>
                               )}
+                              {(() => {
+                                const ck = normalizePlaceKey(
+                                  cleanActivityQuery(activity.name || "")
+                                );
+                                const has = geo.coordsByKey[ck];
+                                if (!has) return null;
+                                return (
+                                  <button
+                                    type="button"
+                                    className="text-blue-600 dark:text-blue-400 hover:underline font-medium"
+                                    onClick={() => {
+                                      window.dispatchEvent(
+                                        new CustomEvent("trip-map-focus", {
+                                          detail: { key: ck },
+                                        })
+                                      );
+                                      document
+                                        .getElementById("trip-map-anchor")
+                                        ?.scrollIntoView({
+                                          behavior: "smooth",
+                                          block: "start",
+                                        });
+                                    }}
+                                  >
+                                    View on map
+                                  </button>
+                                );
+                              })()}
                             </div>
                           </div>
                           {activity.cost && (
@@ -734,8 +908,8 @@ export default function TripOutput({ preferences, plan }: TripOutputProps) {
 
       {/* Tips and Recommendations */}
       {(plan.tips && plan.tips.length > 0) ||
-        (plan.recommendations && plan.recommendations.length > 0) ||
-        (plan.highlights && plan.highlights.length > 0) ? (
+      (plan.recommendations && plan.recommendations.length > 0) ||
+      (plan.highlights && plan.highlights.length > 0) ? (
         <div className="bg-white dark:bg-gray-800 rounded-lg p-6 border border-gray-200 dark:border-gray-700">
           <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-4">
             💡 Tips & Recommendations

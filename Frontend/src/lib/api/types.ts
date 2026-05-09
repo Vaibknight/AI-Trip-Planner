@@ -29,6 +29,13 @@ export interface TripApiResponse {
   };
 }
 
+export interface GenerationMetrics {
+  responseTimeMs: number;
+  throughputCharsPerSec: number;
+  pipelineErrorRatePercent: number;
+  recommendationAccuracyPercent: number;
+}
+
 export interface TripData {
   userId?: string;
   title: string;
@@ -61,8 +68,10 @@ export interface TripData {
   recommendations?: any[];
   weather?: WeatherDetails;
   hotelBooking?: HotelBookingDetails;
+  bestTimeToVisit?: BestTimeToVisitDetails;
   recommendedAreas?: any;
   tags?: string[];
+  generationMetrics?: GenerationMetrics;
   createdAt?: string;
   _id?: string;
   updatedAt?: string;
@@ -159,6 +168,13 @@ export interface HotelBookingDetails {
 export interface HotelBookingLink {
   label: string;
   url: string;
+}
+
+export interface BestTimeToVisitDetails {
+  months?: string;
+  reason?: string;
+  avoid?: string;
+  tips?: string[];
 }
 
 export interface DayItinerary {

@@ -1,6 +1,8 @@
 const openRouterClient = require('../openRouterClient');
 const config = require('../../config/config');
 const logger = require('../../utils/logger');
+const { getTargetLanguageName, resolvePreferredLanguage } = require('../../utils/preferredLanguage');
+const { normalizeTransportationRecommended } = require('../../utils/transportationEnum');
 
 class DestinationAgent {
   constructor() {
@@ -41,6 +43,7 @@ class DestinationAgent {
       });
       
       // Enhanced prompt for 2-3 day trips to emphasize areas
+      const targetLanguage = getTargetLanguageName(resolvePreferredLanguage(tripData));
       const isShortTrip = intent.estimatedDays >= 2 && intent.estimatedDays <= 3;
       const areasInstruction = isShortTrip 
         ? `\nIMPORTANT: Since this is a ${intent.estimatedDays}-day trip, focus on recommending the BEST 3-5 areas/neighborhoods that travelers should explore. These areas should be walkable or easily accessible and contain multiple attractions/activities nearby.`
@@ -53,6 +56,9 @@ class DestinationAgent {
       }
       
       const prompt = `Research ${state || 'a suitable destination'} for a ${intent.estimatedDays}-day trip.
+
+CRITICAL LANGUAGE: Write all travel tips, local transport text, and attraction descriptions in ${targetLanguage}.
+Keep the same HTML tag structure and the exact English field labels shown in the template (e.g. Name:, City:, Country:, Description:, Destination Overview, Key Areas) so the response can be parsed. Only the human-readable text next to each label, inside paragraphs, and in list items must be in ${targetLanguage}.
 
 Origin: ${origin}
 Destination: ${state || 'a suitable destination'}${state ? ' (USE THIS EXACT DESTINATION - DO NOT CHANGE IT)' : ' (suggest a suitable destination)'}
@@ -106,6 +112,7 @@ Requirements:
 - Use REAL attraction names (e.g., "Red Fort", "Eiffel Tower", "Louvre Museum")
 - Include 10-15 specific attractions
 - Use HTML format only - no JSON, no markdown code blocks
+- All descriptive content must be in ${targetLanguage}
 - No explanations, just the HTML content`;
 
       const response = await this.client.chatCompletion({
@@ -113,7 +120,7 @@ Requirements:
         messages: [
           {
             role: 'system',
-            content: 'Output HTML destination information only. Use real place names. No JSON, no markdown code blocks, no explanations.\n\nYou are NOT allowed to use internal chain-of-thought reasoning. You must answer concisely and directly. Do not think step by step. Only output the final answer.'
+            content: `Output HTML destination information only. Descriptive text in ${targetLanguage} as required in the task. Use real place names. No JSON, no markdown code blocks, no explanations.\n\nYou are NOT allowed to use internal chain-of-thought reasoning. You must answer concisely and directly. Do not think step by step. Only output the final answer.`
           },
           {
             role: 'user',
@@ -272,7 +279,9 @@ Requirements:
       // Extract transportation
       const transportMatch = html.match(/<strong>Recommended:<\/strong>\s*([^<]+)/i);
       if (transportMatch) {
-        result.transportation.recommended = transportMatch[1].trim().toLowerCase();
+        result.transportation.recommended = normalizeTransportationRecommended(
+          transportMatch[1].trim()
+        );
       }
 
       const optionsMatch = html.match(/<strong>Options:<\/strong>\s*([^<]+)/i);
