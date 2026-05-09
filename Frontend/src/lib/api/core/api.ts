@@ -4,7 +4,7 @@ import type { ApiResponse, RequestConfig } from "../shared-types";
 // API Configuration
 // ============================================================================
 const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+  process.env.NEXT_PUBLIC_API_URL || "https://ai-trip-planner-production-5505.up.railway.app/api";
 const DEFAULT_TIMEOUT = 30000; // 30 seconds
 
 // ============================================================================
