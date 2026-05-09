@@ -2,6 +2,7 @@ const tripService = require('../services/tripService');
 const orchestratorService = require('../services/orchestratorService');
 const logger = require('../utils/logger');
 const { resolvePreferredLanguage } = require('../utils/preferredLanguage');
+const { computeGenerationMetrics } = require('../utils/planMetrics');
 
 /**
  * Calculate trip start and end dates based on arrival time
@@ -410,6 +411,8 @@ const planTripWithPreferencesSSE = async (req, res, next) => {
     // Send initial connection event
     sendEvent('connected', { message: 'Connected to trip planning stream' });
 
+    const generationStarted = Date.now();
+
     // Generate trip plan with streaming updates + optional token chunks during itinerary LLM stream
     const tripPlan = await orchestratorService.planTripWithPreferences(tripData, progressCallback, {
       onItineraryToken: (chunk) => {
@@ -419,23 +422,25 @@ const planTripWithPreferencesSSE = async (req, res, next) => {
       }
     });
 
+    const elapsedMs = Date.now() - generationStarted;
+    tripPlan.generationMetrics = computeGenerationMetrics(tripPlan, tripData, elapsedMs);
+
     // Create trip in database
     const trip = await tripService.createTrip(req.userId, tripPlan);
 
-    // Send final trip data
+    const plainTrip =
+      typeof trip.toObject === 'function'
+        ? trip.toObject({ flattenMaps: true })
+        : trip;
+
+    // Send final trip data (full document so recommendations, metrics, etc. reach the client)
     sendEvent('complete', {
       status: 'success',
       message: 'Trip planned successfully',
       data: {
-        trip: {
-          id: trip._id,
-          title: trip.title,
-          destination: trip.destination,
-          duration: trip.duration,
-          itineraryHtml: trip.itineraryHtml,
-          weather: trip.weather || null
-        },
-        weather: trip.weather || null
+        trip: plainTrip,
+        itineraryHtml: plainTrip.itineraryHtml || null,
+        weather: plainTrip.weather || null
       }
     });
 
@@ -707,8 +712,16 @@ const planTripWithPreferencesSync = async (req, res, next) => {
       logger.info('Preferences Trip Planning Progress:', progress);
     };
 
+    const generationStarted = Date.now();
+
     // Generate trip plan using orchestrator with preferences
     const tripPlan = await orchestratorService.planTripWithPreferences(tripData, progressCallback);
+
+    tripPlan.generationMetrics = computeGenerationMetrics(
+      tripPlan,
+      tripData,
+      Date.now() - generationStarted
+    );
 
     // Create trip in database
     const trip = await tripService.createTrip(req.userId, tripPlan);

@@ -29,6 +29,13 @@ export interface TripApiResponse {
   };
 }
 
+export interface GenerationMetrics {
+  responseTimeMs: number;
+  throughputCharsPerSec: number;
+  pipelineErrorRatePercent: number;
+  recommendationAccuracyPercent: number;
+}
+
 export interface TripData {
   userId?: string;
   title: string;
@@ -64,6 +71,7 @@ export interface TripData {
   bestTimeToVisit?: BestTimeToVisitDetails;
   recommendedAreas?: any;
   tags?: string[];
+  generationMetrics?: GenerationMetrics;
   createdAt?: string;
   _id?: string;
   updatedAt?: string;

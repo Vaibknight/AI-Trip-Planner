@@ -271,6 +271,12 @@ const tripSchema = new mongoose.Schema({
   },
   recommendedAreas: [String], // Recommended areas/neighborhoods for 2-3 day trips
   tags: [String],
+  generationMetrics: {
+    responseTimeMs: { type: Number },
+    throughputCharsPerSec: { type: Number },
+    pipelineErrorRatePercent: { type: Number },
+    recommendationAccuracyPercent: { type: Number }
+  },
   createdAt: {
     type: Date,
     default: Date.now

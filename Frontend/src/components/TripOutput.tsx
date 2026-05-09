@@ -4,6 +4,7 @@ import dynamic from "next/dynamic";
 import { useMemo } from "react";
 import type { TripPreferences } from "@/types/trip";
 import type { TripData } from "@/lib/api/types";
+import GenerationMetricsPanel from "@/components/GenerationMetricsPanel";
 import { useTripGeocoding } from "@/hooks/useTripGeocoding";
 import ItineraryHtmlMapEnhanced from "@/components/ItineraryHtmlMapEnhanced";
 import { cleanActivityQuery, normalizePlaceKey } from "@/lib/itineraryPlaces";
@@ -229,6 +230,10 @@ export default function TripOutput({ preferences, plan }: TripOutputProps) {
           </div>
         )}
       </div>
+
+      {plan.generationMetrics && (
+        <GenerationMetricsPanel metrics={plan.generationMetrics} />
+      )}
 
       {/* Trip map — loads on demand (POST /api/maps/geocode/batch) */}
       <div
@@ -903,8 +908,8 @@ export default function TripOutput({ preferences, plan }: TripOutputProps) {
 
       {/* Tips and Recommendations */}
       {(plan.tips && plan.tips.length > 0) ||
-        (plan.recommendations && plan.recommendations.length > 0) ||
-        (plan.highlights && plan.highlights.length > 0) ? (
+      (plan.recommendations && plan.recommendations.length > 0) ||
+      (plan.highlights && plan.highlights.length > 0) ? (
         <div className="bg-white dark:bg-gray-800 rounded-lg p-6 border border-gray-200 dark:border-gray-700">
           <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-4">
             💡 Tips & Recommendations

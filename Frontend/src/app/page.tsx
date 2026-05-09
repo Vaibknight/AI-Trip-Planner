@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import TripForm from "@/components/TripForm";
+import GenerationMetricsPanel from "@/components/GenerationMetricsPanel";
 import TripOutput from "@/components/TripOutput";
 import AuthContainer from "@/components/auth/AuthContainer";
 import { useTripPlan } from "@/hooks/useTripPlan";
@@ -129,17 +130,25 @@ export default function Home() {
             {/* Output Section */}
             {(tripPreferences || isLoading) && (
               <div>
-                <div className="flex items-center justify-between mb-6">
-                  <h2 className="text-2xl font-semibold text-gray-900 dark:text-white">
-                    Trip Plan
-                  </h2>
-                  {isCached && plan && (
-                    <span className="text-xs px-3 py-1 bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300 rounded-full flex items-center gap-1">
-                      <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
-                        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-                      </svg>
-                      Cached
-                    </span>
+                <div className="mb-6 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <h2 className="text-2xl font-semibold text-gray-900 dark:text-white">
+                      Trip Plan
+                    </h2>
+                    {isCached && plan && (
+                      <span className="text-xs px-3 py-1 bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300 rounded-full flex items-center gap-1">
+                        <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                          <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                        </svg>
+                        Cached
+                      </span>
+                    )}
+                  </div>
+                  {plan?.generationMetrics && (
+                    <GenerationMetricsPanel
+                      metrics={plan.generationMetrics}
+                      variant="compact"
+                    />
                   )}
                 </div>
                 {error && (
