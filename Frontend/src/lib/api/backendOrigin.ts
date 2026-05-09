@@ -6,6 +6,6 @@ export function getBackendOrigin(): string {
   const raw =
     process.env.BACKEND_URL ||
     process.env.NEXT_PUBLIC_BACKEND_URL ||
-    "http://localhost:8000";
+    "https://ai-trip-planner-production-5505.up.railway.app/api";
   return raw.replace(/\/$/, "");
 }
