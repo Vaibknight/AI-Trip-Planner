@@ -29,8 +29,8 @@ const preferencesTripValidator = [
   // Travel Type (optional)
   body('travelType')
     .optional()
-    .isIn(['leisure', 'business', 'adventure', 'cultural'])
-    .withMessage('Travel type must be one of: leisure, business, adventure, cultural'),
+    .isIn(['leisure', 'business', 'adventure', 'cultural', 'family', 'romantic', 'solo'])
+    .withMessage('Travel type must be one of: leisure, business, adventure, cultural, family, romantic, solo'),
   
   // Interests (optional array)
   body('interests')

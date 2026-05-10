@@ -4,7 +4,7 @@ import type { ApiResponse, RequestConfig } from "./shared-types";
 // Default matches Backend PORT in Backend/.env (8000). Override with NEXT_PUBLIC_API_URL.
 // Use http://localhost:3000/api + BACKEND_URL proxy if you want same-origin calls to Next.
 const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+  process.env.NEXT_PUBLIC_API_URL || "https://ai-trip-planner-production-5505.up.railway.app/api";
 const API_TIMEOUT = 30000; // 30 seconds
 
 // Custom error class
