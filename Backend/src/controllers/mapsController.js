@@ -68,6 +68,8 @@ const geocodeBatch = async (req, res, next) => {
         tag: 'maps:geocodeBatch',
         durationMs: meta.durationMs,
         uniqueCount: meta.uniqueCount,
+        uniqueCleanedCount: meta.uniqueCleanedCount,
+        skippedCount: meta.skippedCount,
         concurrency: meta.concurrency,
         mongoPrefetchHits: meta.mongoPrefetchHits
       })
