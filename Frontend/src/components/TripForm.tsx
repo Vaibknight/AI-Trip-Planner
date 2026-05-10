@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import Dropdown from "./ui/Dropdown";
 import SearchableDropdown from "./ui/SearchableDropdown";
 import MultiSelect from "./ui/MultiSelect";
@@ -16,6 +16,60 @@ import {
 import { fetchCountries, fetchStates, getCountryCode } from "@/lib/api/country-state";
 import { getCurrencyForCountry, validateCurrency } from "@/lib/country-currency";
 import type { TripPreferences } from "@/types/trip";
+
+const MIN_BUDGET_INDIA = 10_000;
+const MIN_BUDGET_OUTSIDE_INDIA = 50_000;
+
+function isIndiaCountry(country: string | undefined): boolean {
+  return country?.trim().toLowerCase() === "india";
+}
+
+function minBudgetAmountForCountry(country: string | undefined): number {
+  return isIndiaCountry(country) ? MIN_BUDGET_INDIA : MIN_BUDGET_OUTSIDE_INDIA;
+}
+
+/** Leading numeric amount from budget input (supports ranges like "10000-20000"). */
+function parseBudgetAmountForMinCheck(raw: string): number | null {
+  const t = raw.trim().replace(/\s/g, "").replace(/,/g, "");
+  if (!t) return null;
+  const firstSegment = t.split("-")[0];
+  const n = Number(firstSegment);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return n;
+}
+
+/** `datetime-local` value in local timezone (minute precision). */
+function formatDatetimeLocal(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(
+    d.getHours()
+  )}:${pad(d.getMinutes())}`;
+}
+
+function parseDatetimeLocal(value: string): Date | null {
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function addCalendarDaysToLocalDatetimeString(
+  datetimeLocal: string,
+  days: number
+): string | null {
+  const d = parseDatetimeLocal(datetimeLocal);
+  if (!d) return null;
+  const out = new Date(d.getTime());
+  out.setDate(out.getDate() + days);
+  return formatDatetimeLocal(out);
+}
+
+/** Accepts `YYYY-MM-DDTHH:mm` or an ISO string from the API. */
+function toDatetimeLocalInputValue(value: string | undefined): string {
+  if (!value) return "";
+  const v = value.trim();
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(v)) return v;
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? "" : formatDatetimeLocal(d);
+}
 
 interface TripFormProps {
   onSubmit: (preferences: TripPreferences) => void;
@@ -53,6 +107,9 @@ export default function TripForm({
   const [countryCodeMap, setCountryCodeMap] = useState<Record<string, string>>({});
   const [fieldErrors, setFieldErrors] = useState<Record<string, string | undefined>>({});
   const [isSubmitted, setIsSubmitted] = useState(false);
+
+  /** Frozen at mount so `datetime-local` min= does not drift on re-renders (fixes native tooltip errors). */
+  const earliestStartLocalRef = useRef(formatDatetimeLocal(new Date()));
 
   // Fetch countries on component mount
   useEffect(() => {
@@ -157,14 +214,31 @@ export default function TripForm({
   // Update form when initialValues change
   useEffect(() => {
     if (initialValues) {
-      setPreferences(initialValues);
+      setPreferences({
+        ...initialValues,
+        startDateTime: toDatetimeLocalInputValue(initialValues.startDateTime),
+        endDateTime: toDatetimeLocalInputValue(initialValues.endDateTime),
+      });
     }
   }, [initialValues]);
 
-  // Removed auto-calculation - users can select departure date freely
+  const minEndDatetimeLocal = useMemo(() => {
+    if (!preferences.startDateTime || !preferences.duration) return "";
+    return (
+      addCalendarDaysToLocalDatetimeString(
+        preferences.startDateTime,
+        preferences.duration
+      ) ?? ""
+    );
+  }, [preferences.startDateTime, preferences.duration]);
 
   // Validation functions
-  const validateField = (fieldName: string, value: any): string | undefined => {
+  const validateField = (
+    fieldName: string,
+    value: any,
+    prefsOverride?: Partial<TripPreferences>
+  ): string | undefined => {
+    const p = { ...preferences, ...prefsOverride };
     switch (fieldName) {
       case "origin":
         if (!value || !value.trim()) {
@@ -200,6 +274,18 @@ export default function TripForm({
         if (!value || !value.trim()) {
           return "Budget range is required";
         }
+        {
+          const amount = parseBudgetAmountForMinCheck(value);
+          if (amount === null) {
+            return "Enter a valid numeric budget (e.g., 50000 or 10000-20000)";
+          }
+          const minBudget = minBudgetAmountForCountry(p.country);
+          if (amount < minBudget) {
+            return isIndiaCountry(p.country)
+              ? `Budget must be at least ${MIN_BUDGET_INDIA.toLocaleString()} for India`
+              : `Budget must be at least ${MIN_BUDGET_OUTSIDE_INDIA.toLocaleString()} for countries other than India`;
+          }
+        }
         break;
       case "travelers":
         if (!value || value <= 0) {
@@ -215,22 +301,32 @@ export default function TripForm({
         if (!value || !value.trim()) {
           return "Start date & time is required";
         }
+        if (value < earliestStartLocalRef.current) {
+          return "Start date & time cannot be earlier than when you opened this form";
+        }
         break;
       case "endDateTime":
         if (!value || !value.trim()) {
           return "End date & time is required";
         }
-        if (preferences.startDateTime && preferences.duration) {
-          const startDate = new Date(preferences.startDateTime);
-          const minEndDate = new Date(startDate);
-          minEndDate.setDate(minEndDate.getDate() + preferences.duration);
-          const selectedEndDate = new Date(value);
-          
-          if (selectedEndDate < minEndDate) {
-            return `End date must be at least ${preferences.duration} day${preferences.duration > 1 ? 's' : ''} after start date`;
+        if (p.startDateTime) {
+          const startDate = parseDatetimeLocal(p.startDateTime);
+          const selectedEndDate = parseDatetimeLocal(value);
+          if (!startDate || !selectedEndDate) {
+            return "Invalid date & time";
           }
-        } else if (preferences.startDateTime && value < preferences.startDateTime) {
-          return "End date must be after start date";
+          if (selectedEndDate <= startDate) {
+            return "End date must be after start date";
+          }
+          if (p.duration) {
+            const minEndDate = new Date(startDate);
+            minEndDate.setDate(minEndDate.getDate() + p.duration);
+            if (selectedEndDate < minEndDate) {
+              return `End date must be at least ${p.duration} day${
+                p.duration > 1 ? "s" : ""
+              } after the start date and time`;
+            }
+          }
         }
         break;
       case "interests":
@@ -329,12 +425,22 @@ export default function TripForm({
           options={countries}
           value={preferences.country}
           onChange={(value) => {
-            setPreferences({ ...preferences, country: value as string, state: "" });
+            const country = value as string;
+            setPreferences({ ...preferences, country, state: "" });
             if (isSubmitted && fieldErrors.country) {
-              const error = validateField("country", value);
+              const error = validateField("country", country);
               setFieldErrors((prev) => ({
                 ...prev,
                 country: error || undefined,
+              }));
+            }
+            if (isSubmitted && preferences.budgetRangeString?.trim()) {
+              const budgetErr = validateField("budgetRangeString", preferences.budgetRangeString, {
+                country,
+              });
+              setFieldErrors((prev) => ({
+                ...prev,
+                budgetRangeString: budgetErr || undefined,
               }));
             }
           }}
@@ -420,16 +526,37 @@ export default function TripForm({
           value={preferences.duration}
           onChange={(value) => {
             const newDuration = value as number;
-            setPreferences((prev) => ({
-              ...prev,
-              duration: newDuration,
-              // Removed auto-calculation - users can set endDateTime freely
-            }));
+            setPreferences((prev) => {
+              const next = { ...prev, duration: newDuration };
+              if (prev.startDateTime) {
+                const nextEnd = addCalendarDaysToLocalDatetimeString(
+                  prev.startDateTime,
+                  newDuration
+                );
+                if (nextEnd) next.endDateTime = nextEnd;
+              }
+              return next;
+            });
             if (isSubmitted && fieldErrors.duration) {
               const error = validateField("duration", value);
               setFieldErrors((prev) => ({
                 ...prev,
                 duration: error || undefined,
+              }));
+            }
+            if (isSubmitted && preferences.startDateTime) {
+              const nextEnd =
+                addCalendarDaysToLocalDatetimeString(
+                  preferences.startDateTime,
+                  newDuration
+                ) ?? "";
+              const endErr = validateField("endDateTime", nextEnd, {
+                duration: newDuration,
+                endDateTime: nextEnd,
+              });
+              setFieldErrors((prev) => ({
+                ...prev,
+                endDateTime: endErr || undefined,
               }));
             }
           }}
@@ -447,19 +574,26 @@ export default function TripForm({
             type="text"
             value={preferences.budgetRangeString || ""}
             onChange={(e) => {
+              const next = e.target.value;
               setPreferences({
                 ...preferences,
-                budgetRangeString: e.target.value,
+                budgetRangeString: next,
               });
-              if (isSubmitted && fieldErrors.budgetRangeString) {
-                const error = validateField("budgetRangeString", e.target.value);
+              if (isSubmitted) {
+                const error = validateField("budgetRangeString", next);
                 setFieldErrors((prev) => ({
                   ...prev,
                   budgetRangeString: error || undefined,
                 }));
               }
             }}
-            placeholder="Enter budget range string (e.g., 10000)"
+            placeholder={
+              isIndiaCountry(preferences.country)
+                ? `Minimum ${MIN_BUDGET_INDIA.toLocaleString()} (India)`
+                : preferences.country
+                  ? `Minimum ${MIN_BUDGET_OUTSIDE_INDIA.toLocaleString()}`
+                  : "Select country, then enter budget (e.g., 50000)"
+            }
             className={`w-full px-4 py-3 bg-white dark:bg-gray-800 border rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:border-transparent transition-colors text-gray-900 dark:text-white ${
               isSubmitted && fieldErrors.budgetRangeString
                 ? "border-red-500 focus:ring-red-500"
@@ -535,11 +669,20 @@ export default function TripForm({
             }
             onChange={(e) => {
               const newStartDateTime = e.target.value;
-              setPreferences((prev) => ({
-                ...prev,
-                startDateTime: newStartDateTime,
-                // Removed auto-calculation - users can set endDateTime freely
-              }));
+              setPreferences((prev) => {
+                const next: typeof prev = {
+                  ...prev,
+                  startDateTime: newStartDateTime,
+                };
+                if (newStartDateTime && prev.duration) {
+                  const nextEnd = addCalendarDaysToLocalDatetimeString(
+                    newStartDateTime,
+                    prev.duration
+                  );
+                  if (nextEnd) next.endDateTime = nextEnd;
+                }
+                return next;
+              });
               if (isSubmitted && fieldErrors.startDateTime) {
                 const error = validateField("startDateTime", newStartDateTime);
                 setFieldErrors((prev) => ({
@@ -547,8 +690,25 @@ export default function TripForm({
                   startDateTime: error || undefined,
                 }));
               }
+              if (isSubmitted) {
+                const nextEnd =
+                  newStartDateTime && preferences.duration
+                    ? addCalendarDaysToLocalDatetimeString(
+                        newStartDateTime,
+                        preferences.duration
+                      ) ?? ""
+                    : preferences.endDateTime;
+                const error = validateField("endDateTime", nextEnd || "", {
+                  startDateTime: newStartDateTime,
+                  endDateTime: nextEnd || undefined,
+                });
+                setFieldErrors((prev) => ({
+                  ...prev,
+                  endDateTime: error || undefined,
+                }));
+              }
             }}
-            min={new Date().toISOString().slice(0, 16)}
+            min={earliestStartLocalRef.current}
             className={`w-full px-4 py-3 bg-white dark:bg-gray-800 border rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:border-transparent transition-colors text-gray-900 dark:text-white ${
               isSubmitted && fieldErrors.startDateTime
                 ? "border-red-500 focus:ring-red-500"
@@ -588,7 +748,10 @@ export default function TripForm({
                 }));
               }
             }}
-            min={new Date().toISOString().slice(0, 16)}
+            min={
+              minEndDatetimeLocal ||
+              earliestStartLocalRef.current
+            }
             className={`w-full px-4 py-3 bg-white dark:bg-gray-800 border rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:border-transparent transition-colors ${
               isSubmitted && fieldErrors.endDateTime
                 ? "border-red-500 focus:ring-red-500 text-gray-900 dark:text-white"
