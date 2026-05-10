@@ -29,6 +29,10 @@ export interface GeocodeBatchMeta {
   uniqueCount: number;
   concurrency: number;
   mongoPrefetchHits: number;
+  /** Deduped normalized queries sent to Nominatim (after skip filter) */
+  uniqueCleanedCount?: number;
+  /** Queries skipped as non-landmark / generic (client + server) */
+  skippedCount?: number;
 }
 
 /** Nominatim policy ~1 req/s; parallel workers still serialize HTTP — allow long batches */
@@ -199,6 +203,7 @@ export function useTripGeocoding(plan: TripData | null | undefined) {
       setMapPins(buildPins(allPlaces, coordsAccumulator));
       setStatus("ready");
     } catch (e) {
+      console.warn("tripMap: wave1 geocode failed — keeping itinerary; map optional", e);
       setStatus("error");
       setErrorMessage(
         e instanceof Error ? e.message : "Could not load map locations"

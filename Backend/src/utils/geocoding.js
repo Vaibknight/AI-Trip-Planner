@@ -1,6 +1,7 @@
 const logger = require('./logger');
 const pLimit = require('p-limit');
 const { isLikelyGeocodableScript } = require('./geocodingContext');
+const placeNorm = require('./placeNormalization');
 
 const NOMINATIM_HTTP_TIMEOUT_MS = parseInt(process.env.NOMINATIM_HTTP_TIMEOUT_MS || '10000', 10);
 const NOMINATIM_MAX_ATTEMPTS = parseInt(process.env.NOMINATIM_MAX_ATTEMPTS || '3', 10);
@@ -87,78 +88,12 @@ class GeocodingService {
   }
 
   /**
-   * Strip itinerary-style prefixes / pick venue after commas so Nominatim sees POI names, not full sentences.
-   * @param {string} s
-   * @returns {string}
-   */
-  _stripLeadingActivityPrefixes(s) {
-    if (!s) return '';
-    const patterns = [
-      /^return\s+to\s+/i,
-      /^travel\s+to\s+/i,
-      /^day\s+trip\s+to\s+/i,
-      /^trip\s+to\s+/i,
-      /^visit\s+to\s+/i,
-      /^visit\s+/i,
-      /^check-in\s+at\s+/i,
-      /^check-out\s+(from\s+)?/i,
-      /^(breakfast|brunch|lunch|dinner|supper|coffee|tea|snacks?)\s+at\s+/i,
-      /^(breakfast|brunch|lunch|dinner)\s+on\s+(the\s+)?/i,
-      /^(explore|tour|stroll)\s+(through\s+|of\s+|to\s+)?/i
-    ];
-    let t = String(s).trim();
-    for (let round = 0; round < 6; round++) {
-      const before = t;
-      for (const re of patterns) {
-        t = t.replace(re, '').trim();
-      }
-      if (t === before) break;
-    }
-    return t;
-  }
-
-  /**
-   * Skip comma-tail segments like "evening free" when a better segment exists earlier.
-   * @param {string} seg
-   * @returns {boolean}
-   */
-  _isVagueGeocodeSegment(seg) {
-    const t = (seg || '').trim().toLowerCase();
-    if (t.length < 2) return true;
-    if (/^(evening|morning|afternoon|night)\b/.test(t) && /\b(free|leisure|rest)\b/.test(t)) return true;
-    if (/^free\s+time$/i.test(t)) return true;
-    if (/^relax/i.test(t)) return true;
-    return false;
-  }
-
-  /**
-   * Normalize free-text itinerary lines for geocoding (used before cache key + Nominatim).
+   * Normalize free-text itinerary lines for geocoding (delegates to shared utility).
    * @param {string} text
    * @returns {string}
    */
   sanitizePlaceForGeocode(text) {
-    if (!text || typeof text !== 'string') return '';
-    let s = String(text).trim().replace(/\s+/g, ' ');
-    if (!s) return '';
-
-    const flight = s.match(/^flight\s+from\s+.+\s+to\s+(.+)$/i);
-    if (flight && flight[1] && flight[1].trim().length >= 2) {
-      return flight[1].trim();
-    }
-
-    if (s.includes(',')) {
-      const parts = s.split(',').map((p) => p.trim()).filter(Boolean);
-      for (let i = parts.length - 1; i >= 0; i--) {
-        let seg = this._stripLeadingActivityPrefixes(parts[i]);
-        if (this._isVagueGeocodeSegment(seg)) continue;
-        if (seg.length >= 2 && !/^(return|travel)\s+to\s+/i.test(seg)) {
-          return seg;
-        }
-      }
-      return this._stripLeadingActivityPrefixes(parts[parts.length - 1] || s).trim();
-    }
-
-    return this._stripLeadingActivityPrefixes(s).trim();
+    return placeNorm.normalizePlaceForGeocode(text);
   }
 
   /**
@@ -175,8 +110,8 @@ class GeocodingService {
   }
 
   /**
-   * @param {string} query
-   * @returns {Promise<object|null>} first result
+   * @param {string} cacheKey
+   * @returns {Promise<object|null>} coordinates or null
    */
   async _loadFromMongo(cacheKey) {
     try {
@@ -196,20 +131,27 @@ class GeocodingService {
    * @param {string} placeSnippet
    * @param {string|object|null} placeContext
    * @param {{ latitude: number, longitude: number }} coordinates
+   * @param {string} [formattedAddress]
    */
-  async _saveToMongo(cacheKey, placeSnippet, placeContext, coordinates) {
+  async _saveToMongo(cacheKey, placeSnippet, placeContext, coordinates, formattedAddress = '') {
     try {
       const GeocodeCache = require('../models/GeocodeCache');
       const ctx = this._normalizePlaceContext(placeContext);
+      const city = ctx.city || '';
+      const country = ctx.country || '';
       await GeocodeCache.findOneAndUpdate(
         { key: cacheKey },
         {
           key: cacheKey,
+          placeName: placeSnippet || '',
           place: placeSnippet || '',
-          contextCity: ctx.city || '',
-          contextCountry: ctx.country || '',
+          city,
+          country,
+          contextCity: city,
+          contextCountry: country,
           latitude: coordinates.latitude,
-          longitude: coordinates.longitude
+          longitude: coordinates.longitude,
+          formattedAddress: formattedAddress ? String(formattedAddress) : ''
         },
         { upsert: true }
       );
@@ -342,14 +284,16 @@ class GeocodingService {
   async geocodeBatchParallel(places, placeContext = null) {
     const tBatch = Date.now();
     const raw = Array.isArray(places) ? places : [];
-    const unique = [...new Set(raw.map((p) => String(p).trim()).filter((p) => p.length > 0))];
+    const uniqueRaw = [...new Set(raw.map((p) => String(p).trim()).filter((p) => p.length > 0))];
 
-    if (unique.length === 0) {
+    if (uniqueRaw.length === 0) {
       return {
         results: [],
         meta: {
           durationMs: 0,
           uniqueCount: 0,
+          uniqueCleanedCount: 0,
+          skippedCount: 0,
           concurrency: GEOCODE_BATCH_CONCURRENCY,
           mongoPrefetchHits: 0,
           nominatimApprox: 'see logs'
@@ -357,37 +301,76 @@ class GeocodingService {
       };
     }
 
-    const prefetchKeys = unique.map((p) =>
-      this._primaryCacheKey(this._primaryLookupBody(p), placeContext)
-    );
-    const prefetch = await this._prefetchMongoByKeys(prefetchKeys);
+    const cleanedFor = (place) => {
+      const c = (placeNorm.normalizePlaceForGeocode(place) || place).trim();
+      return c;
+    };
+
+    const skippedPlaces = new Set();
+    const cleanKeyToCanonical = new Map();
+
+    for (const place of uniqueRaw) {
+      const cleaned = cleanedFor(place);
+      if (placeNorm.shouldSkipGeocodeQuery(cleaned)) {
+        skippedPlaces.add(place);
+        continue;
+      }
+      const ck = cleaned.toLowerCase();
+      if (!cleanKeyToCanonical.has(ck)) {
+        cleanKeyToCanonical.set(ck, cleaned);
+      }
+    }
+
+    const uniqueCleaned = [...cleanKeyToCanonical.values()];
+    let mongoPrefetchHits = 0;
+    if (uniqueCleaned.length > 0) {
+      const prefetchKeys = uniqueCleaned.map((c) =>
+        this._primaryCacheKey(this._primaryLookupBody(c), placeContext)
+      );
+      const prefetch = await this._prefetchMongoByKeys(prefetchKeys);
+      mongoPrefetchHits = prefetch.found;
+    }
 
     const limit = pLimit(GEOCODE_BATCH_CONCURRENCY);
-    const tasks = unique.map((place) =>
-      limit(() => this.geocode(place, placeContext))
-    );
-    const coordsList = await Promise.all(tasks);
+    const coordByCleanLower = new Map();
 
-    const results = unique.map((place, i) => ({
-      place,
-      coordinates: coordsList[i] || null
-    }));
+    await Promise.all(
+      uniqueCleaned.map((cleaned) =>
+        limit(async () => {
+          const coords = await this.geocode(cleaned, placeContext);
+          coordByCleanLower.set(cleaned.toLowerCase(), coords || null);
+        })
+      )
+    );
+
+    const results = uniqueRaw.map((place) => {
+      if (skippedPlaces.has(place)) {
+        return { place, coordinates: null };
+      }
+      const cleaned = cleanedFor(place);
+      const coords = coordByCleanLower.get(cleaned.toLowerCase()) || null;
+      return { place, coordinates: coords };
+    });
 
     const durationMs = Date.now() - tBatch;
     logger.info('Geocoding: batch parallel complete', {
       durationMs,
-      uniqueCount: unique.length,
+      uniqueCount: uniqueRaw.length,
+      uniqueCleanedCount: uniqueCleaned.length,
+      skippedCount: skippedPlaces.size,
       concurrency: GEOCODE_BATCH_CONCURRENCY,
-      mongoPrefetchDocs: prefetch.found
+      mongoPrefetchHits
     });
 
     return {
       results,
       meta: {
         durationMs,
-        uniqueCount: unique.length,
+        uniqueCount: uniqueRaw.length,
+        uniqueCleanedCount: uniqueCleaned.length,
+        skippedCount: skippedPlaces.size,
         concurrency: GEOCODE_BATCH_CONCURRENCY,
-        mongoPrefetchHits: prefetch.found
+        mongoPrefetchHits
       }
     };
   }
@@ -405,6 +388,16 @@ class GeocodingService {
     }
     const ctx = this._normalizePlaceContext(placeContext);
     const ctxKey = `ctx:${ctx.city || ''}|${ctx.country || ''}`.toLowerCase();
+
+    const trimmed = locationName.trim();
+    const preview = this.sanitizePlaceForGeocode(trimmed) || trimmed;
+    if (placeNorm.shouldSkipGeocodeQuery(preview)) {
+      logger.debug('Geocoding: Skipped generic / non-landmark text', {
+        locationName,
+        preview
+      });
+      return null;
+    }
 
     const runOnce = async (qBody, logLabel) => {
       const fullQuery = this._buildNominatimQuery(qBody, placeContext);
@@ -429,8 +422,16 @@ class GeocodingService {
             latitude: parseFloat(result.lat),
             longitude: parseFloat(result.lon)
           };
+          const formatted =
+            result.display_name != null ? String(result.display_name) : '';
           this.cache.set(cacheKey, coordinates);
-          await this._saveToMongo(cacheKey, qBody.trim(), placeContext, coordinates);
+          await this._saveToMongo(
+            cacheKey,
+            qBody.trim(),
+            placeContext,
+            coordinates,
+            formatted
+          );
           logger.debug('Geocoding: Success', {
             locationName,
             placeContext,
@@ -455,7 +456,6 @@ class GeocodingService {
     };
 
     // 1) sanitized itinerary text (POI / city names), then 2) as provided
-    const trimmed = locationName.trim();
     const sanitized = this.sanitizePlaceForGeocode(trimmed);
     let coords = null;
     if (

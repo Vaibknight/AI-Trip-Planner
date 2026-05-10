@@ -1,67 +1,17 @@
 import type { TripData } from "@/lib/api/types";
+import {
+  normalizePlaceForGeocode,
+  shouldSkipGeocodeQuery,
+} from "@/lib/placeNormalization";
 
 /** Normalize place key for matching batch geocode results */
 export function normalizePlaceKey(query: string): string {
   return query.trim().toLowerCase();
 }
 
-/** Align with Backend sanitizePlaceForGeocode — send POI/city names to batch geocode, not full sentences */
-function stripLeadingActivityPrefixes(s: string): string {
-  const patterns = [
-    /^return\s+to\s+/i,
-    /^travel\s+to\s+/i,
-    /^day\s+trip\s+to\s+/i,
-    /^trip\s+to\s+/i,
-    /^visit\s+to\s+/i,
-    /^visit\s+/i,
-    /^check-in\s+at\s+/i,
-    /^check-out\s+(from\s+)?/i,
-    /^(breakfast|brunch|lunch|dinner|supper|coffee|tea|snacks?)\s+at\s+/i,
-    /^(breakfast|brunch|lunch|dinner)\s+on\s+(the\s+)?/i,
-    /^(explore|tour|stroll)\s+(through\s+|of\s+|to\s+)?/i,
-  ];
-  let t = s.trim();
-  for (let round = 0; round < 6; round++) {
-    const before = t;
-    for (const re of patterns) {
-      t = t.replace(re, "").trim();
-    }
-    if (t === before) break;
-  }
-  return t;
-}
-
-function isVagueSegment(seg: string): boolean {
-  const t = seg.trim().toLowerCase();
-  if (t.length < 2) return true;
-  if (/^(evening|morning|afternoon|night)\b/.test(t) && /\b(free|leisure|rest)\b/.test(t)) return true;
-  if (/^free\s+time$/i.test(t)) return true;
-  if (/^relax/i.test(t)) return true;
-  return false;
-}
-
+/** Align with backend — send POI / landmark names to batch geocode, not raw AI sentences */
 export function cleanActivityQuery(raw: string): string {
-  let s = raw.trim().replace(/\s+/g, " ");
-  if (!s) return "";
-
-  const flight = s.match(/^flight\s+from\s+.+\s+to\s+(.+)$/i);
-  if (flight?.[1] && flight[1].trim().length >= 2) {
-    return flight[1].trim();
-  }
-
-  if (s.includes(",")) {
-    const parts = s.split(",").map((p) => p.trim()).filter(Boolean);
-    for (let i = parts.length - 1; i >= 0; i--) {
-      const seg = stripLeadingActivityPrefixes(parts[i]!);
-      if (isVagueSegment(seg)) continue;
-      if (seg.length >= 2 && !/^(return|travel)\s+to\s+/i.test(seg)) {
-        return seg;
-      }
-    }
-    return stripLeadingActivityPrefixes(parts[parts.length - 1] || s).trim();
-  }
-
-  return stripLeadingActivityPrefixes(s).trim() || s;
+  return normalizePlaceForGeocode(raw);
 }
 
 export interface ExtractedPlace {
@@ -74,6 +24,9 @@ export interface ExtractedPlace {
 
 const MAX_PLACES = 40;
 
+/** First geocode wave: at most this many priority stops (then lazy-load the rest). */
+export const PRIORITY_GEOCODE_WAVE_MAX = 8;
+
 /**
  * Unique place queries from structured itinerary + HTML list items for geocoding.
  */
@@ -84,6 +37,7 @@ export function extractPlacesFromPlan(plan: TripData): ExtractedPlace[] {
   const push = (rawQuery: string, label: string, day?: number, time?: string) => {
     const cleaned = cleanActivityQuery(rawQuery);
     if (cleaned.length < 2) return;
+    if (shouldSkipGeocodeQuery(cleaned)) return;
     if (/^(check-in|check-out|explore|visit|stroll|nightlife)$/i.test(cleaned)) return;
     const key = normalizePlaceKey(cleaned);
     if (seen.has(key)) return;
@@ -199,15 +153,25 @@ export function splitPlacesByPriority(places: ExtractedPlace[]): {
     if (priorityKeys.has(ep.key)) priority.push(ep);
   }
 
-  if (priority.length === 0 && deferredList.length > 0) {
-    const n = Math.min(15, Math.max(1, Math.ceil(deferredList.length / 2)));
+  let deferred = deferredList;
+  if (priority.length > PRIORITY_GEOCODE_WAVE_MAX) {
+    const overflow = priority.slice(PRIORITY_GEOCODE_WAVE_MAX);
+    deferred = [...overflow, ...deferredList];
+    priority.splice(PRIORITY_GEOCODE_WAVE_MAX);
+  }
+
+  if (priority.length === 0 && deferred.length > 0) {
+    const n = Math.min(
+      PRIORITY_GEOCODE_WAVE_MAX,
+      Math.max(1, Math.ceil(deferred.length / 2))
+    );
     return {
-      priority: deferredList.slice(0, n),
-      deferred: deferredList.slice(n),
+      priority: deferred.slice(0, n),
+      deferred: deferred.slice(n),
     };
   }
 
-  return { priority, deferred: deferredList };
+  return { priority, deferred };
 }
 
 /**

@@ -242,14 +242,19 @@ export default function TripMapCDN({
       {(pins.length > 0 || status === "loading") && (
         <div
           ref={mapRef}
-          className="h-[500px] w-full rounded-lg overflow-hidden border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900"
+          className="relative h-[500px] w-full rounded-lg overflow-hidden border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900"
           style={{ minHeight: "500px" }}
         >
           {showLoading && (
-            <div className="h-full w-full flex items-center justify-center">
-              <p className="text-gray-600 dark:text-gray-400">
+            <div className="absolute inset-0 z-[500] flex flex-col items-center justify-center gap-4 bg-white/85 dark:bg-gray-900/85 p-6">
+              <div className="flex w-full max-w-sm flex-col gap-3">
+                <div className="h-3 w-[55%] animate-pulse rounded bg-gray-200 dark:bg-gray-700" />
+                <div className="h-3 w-full animate-pulse rounded bg-gray-200 dark:bg-gray-700" />
+                <div className="h-3 w-[72%] animate-pulse rounded bg-gray-200 dark:bg-gray-700" />
+              </div>
+              <p className="text-center text-sm text-gray-600 dark:text-gray-400">
                 {status === "loading"
-                  ? "Loading map data…"
+                  ? "Resolving map locations…"
                   : "Initializing map…"}
               </p>
             </div>
